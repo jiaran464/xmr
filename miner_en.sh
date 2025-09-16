@@ -90,57 +90,58 @@ detect_system() {
     log_info "Architecture: $ARCH -> $XMRIG_ARCH"
 }
 
-# Get latest XMRig version
-get_latest_version() {
-    log_info "Getting latest XMRig version..."
-    
-    # Try GitHub API first
-    VERSION=$(curl -s "https://api.github.com/repos/xmrig/xmrig/releases/latest" | grep -o '"tag_name":"v[^"]*' | head -1 | cut -d'"' -f4 | sed 's/v//')
-    
-    # Fallback to alternative GitHub API
-    if [ -z "$VERSION" ]; then
-        log_info "Trying alternative GitHub API..."
-        VERSION=$(curl -s "https://github.com/xmrig/xmrig/releases/latest" | grep -o 'tag/v[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1 | sed 's/tag\/v//')
-    fi
-    
-    # Fallback to hardcoded stable version
-    if [ -z "$VERSION" ]; then
-        log_info "Using fallback stable version..."
-        VERSION="6.24.0"
-    fi
-    
-    if [ -z "$VERSION" ]; then
-        log_error "Failed to get XMRig version"
-        exit 1
-    fi
-    
-    log_info "Latest XMRig version: $VERSION"
+# Set XMRig version
+set_version() {
+    log_info "Setting XMRig version..."
+    VERSION="6.24.0"
+    log_info "XMRig version: $VERSION"
 }
 
 # Get download URL
 get_download_url() {
     log_info "Generating download URL..."
     
-    # Get distribution info for Linux
+    # Determine the appropriate download URL based on OS and architecture
     case $OS in
         ubuntu|debian)
             if [ "$OS_VERSION" = "20.04" ] || [ "$OS_VERSION" = "20" ]; then
                 DISTRO="focal"
             elif [ "$OS_VERSION" = "22.04" ] || [ "$OS_VERSION" = "22" ]; then
                 DISTRO="jammy"
+            elif [ "$OS_VERSION" = "24.04" ] || [ "$OS_VERSION" = "24" ]; then
+                DISTRO="noble"
             else
                 DISTRO="focal"  # Default fallback
             fi
             ;;
         centos|rhel|rocky|almalinux)
-            DISTRO="focal"  # Use focal as fallback for RHEL-based
+            DISTRO="linux-static"  # Use static build for RHEL-based
+            ;;
+        freebsd)
+            DISTRO="freebsd-static"
             ;;
         *)
-            DISTRO="focal"  # Default fallback
+            DISTRO="linux-static"  # Default to static build
             ;;
     esac
     
-    FILENAME="xmrig-${VERSION}-linux-${DISTRO}-${XMRIG_ARCH}.tar.gz"
+    # Handle macOS separately
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        if [ "$XMRIG_ARCH" = "arm64" ]; then
+            FILENAME="xmrig-${VERSION}-macos-arm64.tar.gz"
+        else
+            FILENAME="xmrig-${VERSION}-macos-x64.tar.gz"
+        fi
+    else
+        # Linux and other Unix-like systems
+        if [ "$XMRIG_ARCH" = "arm64" ]; then
+            # For ARM64, use static build as it's more compatible
+            FILENAME="xmrig-${VERSION}-linux-static-x64.tar.gz"
+        else
+            FILENAME="xmrig-${VERSION}-${DISTRO}-${XMRIG_ARCH}.tar.gz"
+        fi
+    fi
+    
     DOWNLOAD_URL="https://github.com/xmrig/xmrig/releases/download/v${VERSION}/${FILENAME}"
     
     log_info "Download URL: $DOWNLOAD_URL"
@@ -557,7 +558,7 @@ main() {
     
     # Execute installation steps
     detect_system
-    get_latest_version
+    set_version
     get_download_url
     check_prerequisites
     download_and_install
