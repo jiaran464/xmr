@@ -25,13 +25,7 @@ Automated script for one-click XMRig miner deployment, supporting mainstream Lin
 ### Basic Usage
 
 ```bash
-curl -s -L your-domain.com/miner_en.sh | LC_ALL=en_US.UTF-8 bash -s wallet_address pool_address:port cpu_usage
-```
-
-### Chinese Version
-
-```bash
-curl -s -L your-domain.com/miner.sh | LC_ALL=en_US.UTF-8 bash -s 钱包地址 矿池地址:端口 CPU利用率
+curl -s -L https://github.com/jiaran464/xmr/raw/main/miner_en.sh | LC_ALL=en_US.UTF-8 bash -s wallet_address pool_address:port cpu_usage
 ```
 
 ### Parameters
