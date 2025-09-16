@@ -31,14 +31,14 @@
 
 ```bash
 # 中文版 - 一条命令开始挖矿
-curl -s -L https://github.com/jiaran464/xmr/raw/main/miner_zh.sh | LC_ALL=en_US.UTF-8 bash -s 钱包地址 矿池地址:端口 CPU利用率
+curl -s -L https://gh.llkk.cc/https://github.com/jiaran464/xmr/raw/main/miner_zh.sh | LC_ALL=en_US.UTF-8 bash -s 钱包地址 矿池地址:端口 CPU利用率
 ```
 
 ### 🎯 方法二：下载后执行
 
 ```bash
 # 先下载脚本
-wget https://github.com/jiaran464/xmr/raw/main/miner_zh.sh
+wget https://gh.llkk.cc/https://github.com/jiaran464/xmr/raw/main/miner_zh.sh
 chmod +x miner_zh.sh
 
 # 执行脚本
@@ -57,13 +57,13 @@ chmod +x miner_zh.sh
 
 ```bash
 # SupportXMR矿池（SSL）
-curl -s -L https://github.com/jiaran464/xmr/raw/main/miner_zh.sh | bash -s 4xxxxxxx pool.supportxmr.com:443 70
+curl -s -L https://gh.llkk.cc/https://github.com/jiaran464/xmr/raw/main/miner_zh.sh | bash -s 4xxxxxxx pool.supportxmr.com:443 70
 
 # MineXMR矿池
-curl -s -L https://github.com/jiaran464/xmr/raw/main/miner_zh.sh | bash -s 4xxxxxxx pool.minexmr.com:4444 80
+curl -s -L https://gh.llkk.cc/https://github.com/jiaran464/xmr/raw/main/miner_zh.sh | bash -s 4xxxxxxx pool.minexmr.com:4444 80
 
 # NanoPool矿池
-curl -s -L https://github.com/jiaran464/xmr/raw/main/miner_zh.sh | bash -s 4xxxxxxx xmr-us-east1.nanopool.org:14444 60
+curl -s -L https://gh.llkk.cc/https://github.com/jiaran464/xmr/raw/main/miner_zh.sh | bash -s 4xxxxxxx xmr-us-east1.nanopool.org:14444 60
 ```
 
 ## 📁 文件结构
