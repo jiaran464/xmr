@@ -146,14 +146,88 @@ get_download_url() {
     log_info "Download URL: $DOWNLOAD_URL"
 }
 
+# Wait for apt lock to be released
+wait_for_apt_lock() {
+    local max_wait=300  # Maximum wait time: 5 minutes
+    local wait_time=0
+    
+    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
+        if [ $wait_time -ge $max_wait ]; then
+            log_error "Timeout waiting for apt lock to be released"
+            log_info "Attempting to force unlock..."
+            
+            # Kill any hanging apt processes
+            pkill -f apt-get || true
+            pkill -f apt || true
+            
+            # Remove lock files if they exist
+            rm -f /var/lib/apt/lists/lock 2>/dev/null || true
+            rm -f /var/cache/apt/archives/lock 2>/dev/null || true
+            rm -f /var/lib/dpkg/lock-frontend 2>/dev/null || true
+            rm -f /var/lib/dpkg/lock 2>/dev/null || true
+            
+            # Reconfigure dpkg
+            dpkg --configure -a 2>/dev/null || true
+            
+            break
+        fi
+        
+        log_info "Waiting for apt lock to be released... ($wait_time/$max_wait seconds)"
+        sleep 10
+        wait_time=$((wait_time + 10))
+    done
+}
+
 # Install dependencies
 install_dependencies() {
     log_info "Installing dependencies..."
     
     if command -v apt-get >/dev/null 2>&1; then
         # Debian/Ubuntu
-        apt-get update
-        apt-get install -y wget curl tar
+        wait_for_apt_lock
+        
+        # Update package list with retry mechanism
+        local retry_count=0
+        local max_retries=3
+        
+        while [ $retry_count -lt $max_retries ]; do
+            if apt-get update; then
+                break
+            else
+                retry_count=$((retry_count + 1))
+                log_warn "apt-get update failed, retrying... ($retry_count/$max_retries)"
+                if [ $retry_count -lt $max_retries ]; then
+                    sleep 30
+                    wait_for_apt_lock
+                fi
+            fi
+        done
+        
+        if [ $retry_count -eq $max_retries ]; then
+            log_error "Failed to update package list after $max_retries attempts"
+            exit 1
+        fi
+        
+        # Install packages with retry mechanism
+        retry_count=0
+        while [ $retry_count -lt $max_retries ]; do
+            if apt-get install -y wget curl tar; then
+                break
+            else
+                retry_count=$((retry_count + 1))
+                log_warn "Package installation failed, retrying... ($retry_count/$max_retries)"
+                if [ $retry_count -lt $max_retries ]; then
+                    sleep 30
+                    wait_for_apt_lock
+                fi
+            fi
+        done
+        
+        if [ $retry_count -eq $max_retries ]; then
+            log_error "Failed to install packages after $max_retries attempts"
+            exit 1
+        fi
+        
     elif command -v yum >/dev/null 2>&1; then
         # CentOS/RHEL 7
         yum install -y wget curl tar
