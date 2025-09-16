@@ -78,7 +78,9 @@ detect_system() {
             XMRIG_ARCH="x64"
             ;;
         aarch64|arm64)
-            XMRIG_ARCH="arm64"
+            log_error "ARM64 architecture is not supported by XMRig for Linux systems"
+            log_error "Please use an x64 system to run XMRig"
+            exit 1
             ;;
         *)
             log_error "Unsupported architecture: $ARCH"
@@ -134,12 +136,8 @@ get_download_url() {
         fi
     else
         # Linux and other Unix-like systems
-        if [ "$XMRIG_ARCH" = "arm64" ]; then
-            # For ARM64, use static build as it's more compatible
-            FILENAME="xmrig-${VERSION}-linux-static-x64.tar.gz"
-        else
-            FILENAME="xmrig-${VERSION}-${DISTRO}-${XMRIG_ARCH}.tar.gz"
-        fi
+        # Note: XMRig doesn't provide ARM64 builds for Linux, use x64 static build for all architectures
+        FILENAME="xmrig-${VERSION}-${DISTRO}-x64.tar.gz"
     fi
     
     DOWNLOAD_URL="https://github.com/xmrig/xmrig/releases/download/v${VERSION}/${FILENAME}"
