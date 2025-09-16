@@ -135,7 +135,7 @@ get_download_url() {
         FILENAME="xmrig-${VERSION}-${DISTRO}-x64.tar.gz"
     fi
     
-    DOWNLOAD_URL="https://github.com/xmrig/xmrig/releases/download/v${VERSION}/${FILENAME}"
+    DOWNLOAD_URL="https://gh.llkk.cc/https://github.com/xmrig/xmrig/releases/download/v${VERSION}/${FILENAME}"
     
     log_info "下载链接: $DOWNLOAD_URL"
 }
