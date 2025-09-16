@@ -94,7 +94,20 @@ detect_system() {
 get_latest_version() {
     log_info "Getting latest XMRig version..."
     
-    VERSION=$(curl -s "https://xmrig.com/api/releases" | grep -o '"tag_name":"v[^"]*' | head -1 | cut -d'"' -f4 | sed 's/v//')
+    # Try GitHub API first
+    VERSION=$(curl -s "https://api.github.com/repos/xmrig/xmrig/releases/latest" | grep -o '"tag_name":"v[^"]*' | head -1 | cut -d'"' -f4 | sed 's/v//')
+    
+    # Fallback to alternative GitHub API
+    if [ -z "$VERSION" ]; then
+        log_info "Trying alternative GitHub API..."
+        VERSION=$(curl -s "https://github.com/xmrig/xmrig/releases/latest" | grep -o 'tag/v[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1 | sed 's/tag\/v//')
+    fi
+    
+    # Fallback to hardcoded stable version
+    if [ -z "$VERSION" ]; then
+        log_info "Using fallback stable version..."
+        VERSION="6.24.0"
+    fi
     
     if [ -z "$VERSION" ]; then
         log_error "Failed to get XMRig version"
