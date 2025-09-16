@@ -1,49 +1,69 @@
-# XMR Mining Script
+# 🚀 XMRig One-Click Mining Script - Monero Automated Mining Deployment Tool
 
-Automated script for one-click XMRig miner deployment, supporting mainstream Linux distributions and different CPU architectures.
+**Easy Mining, One-Click Deploy!** Professional XMRig automated installation script that lets you quickly start your Monero (XMR) mining journey. Supports all mainstream Linux systems with zero configuration, zero donation, and high-performance mining solution.
 
-## 🚀 Features
+## 🌟 Core Advantages
 
-- ✅ **One-Click Deployment**: Complete configuration with a single command
-- ✅ **System Compatibility**: Supports Ubuntu, Debian, CentOS, RHEL, Rocky, AlmaLinux, openSUSE, Arch, Alpine, etc.
-- ✅ **Architecture Support**: Auto-detects x64 and ARM64 architectures
-- ✅ **Auto Update**: Fetches latest version from official API
-- ✅ **Zero Donation**: donate-level set to 0
-- ✅ **System Service**: Auto-configures systemd or SysV init service
-- ✅ **Auto Start**: Automatically starts mining after system reboot
-- ✅ **Complete Override**: Generated config file completely overrides official default configuration
+- 🎯 **One-Click Deployment**: Complete all configurations with a single command, beginner-friendly
+- 🔥 **Zero Donation Mining**: donate-level set to 0, all profits go to you
+- ⚡ **High-Performance Optimization**: Automatic CPU thread optimization, huge pages support
+- 🛡️ **System Compatibility**: Supports Ubuntu, Debian, CentOS, RHEL, Rocky, AlmaLinux, openSUSE, Arch, Alpine, etc.
+- 🔄 **Auto Update**: Real-time fetching of latest XMRig version
+- 🚀 **Auto Start**: Automatically resume mining after system reboot
+- 📊 **Complete Monitoring**: systemd service management, log monitoring
+
+## 🏷️ Keywords Tags
+
+`XMRig` `Monero Mining` `XMR Mining` `One-Click Mining Script` `Linux Mining` `Automated Mining` `Mining Script` `Cryptocurrency Mining` `CPU Mining` `Zero Donation Mining` `Mining Tool` `Blockchain Mining` `Digital Currency` `Mining Deployment` `Ubuntu Mining` `CentOS Mining` `Debian Mining`
 
 ## 📋 System Requirements
 
-- Linux operating system (supports mainstream distributions)
-- Root privileges
-- Network connection
-- CPU architecture: x86_64 or aarch64/arm64
+- 🐧 **Operating System**: Linux (Ubuntu 18.04+, Debian 9+, CentOS 7+, RHEL 7+, etc.)
+- 👑 **Privileges**: Root access required
+- 🌐 **Network**: Stable internet connection
+- 💾 **Memory**: At least 2GB RAM recommended
+- 💿 **Storage**: 100MB+ free space
+- 🏗️ **Architecture**: x86_64 (64-bit) - **ARM64 currently not supported**
 
-## 🛠️ Usage
+## 🚀 Quick Start
 
-### Basic Usage
+### 🎯 Method 1: Direct Deployment (Recommended)
 
 ```bash
+# English version - One command to start mining
 curl -s -L https://github.com/jiaran464/xmr/raw/main/miner_en.sh | LC_ALL=en_US.UTF-8 bash -s wallet_address pool_address:port cpu_usage
 ```
 
-### Parameters
-
-| Parameter | Description | Example |
-|-----------|-------------|---------|
-| wallet_address | Your Monero wallet address | `4xxxxx...xxxxx` |
-| pool_address:port | Mining pool server address and port | `pool.example.com:4444` |
-| cpu_usage | CPU usage percentage (1-100) | `70` |
-
-### Usage Examples
+### 🎯 Method 2: Download and Execute
 
 ```bash
-# English version
-curl -s -L example.com/miner_en.sh | LC_ALL=en_US.UTF-8 bash -s 4xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx pool.supportxmr.com:443 70
+# Download script first
+wget https://github.com/jiaran464/xmr/raw/main/miner_en.sh
+chmod +x miner_en.sh
 
-# Chinese version
-curl -s -L example.com/miner.sh | LC_ALL=en_US.UTF-8 bash -s 4xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx pool.supportxmr.com:443 70
+# Execute with parameters
+./miner_en.sh wallet_address pool_address:port cpu_usage
+```
+
+### 📝 Parameter Description
+
+| Parameter | Description | Example | Note |
+|-----------|-------------|---------|------|
+| `wallet_address` | Your Monero wallet address | `4xxxxx...xxxxx` | 95 characters long |
+| `pool_address:port` | Mining pool server and port | `pool.supportxmr.com:443` | Include port number |
+| `cpu_usage` | CPU usage percentage | `70` | Range: 1-100 |
+
+### 🔥 Popular Mining Pools Examples
+
+```bash
+# SupportXMR Pool (SSL)
+curl -s -L https://github.com/jiaran464/xmr/raw/main/miner_en.sh | bash -s 4xxxxxxx pool.supportxmr.com:443 70
+
+# MineXMR Pool
+curl -s -L https://github.com/jiaran464/xmr/raw/main/miner_en.sh | bash -s 4xxxxxxx pool.minexmr.com:4444 80
+
+# NanoPool
+curl -s -L https://github.com/jiaran464/xmr/raw/main/miner_en.sh | bash -s 4xxxxxxx xmr-us-east1.nanopool.org:14444 60
 ```
 
 ## 📁 File Structure
@@ -70,60 +90,66 @@ curl -s -L example.com/miner.sh | LC_ALL=en_US.UTF-8 bash -s 4xxxxxxxxxxxxxxxxxx
 - Ensures all parameters are set according to user requirements
 - Compatible with XMRig 6.24.0+ versions
 
-## 🔧 Management Commands
+## 🔧 Mining Management Commands
 
-### Systemd Systems (Recommended)
+### 🖥️ Systemd Systems (Recommended)
 
 ```bash
-# Check status
+# 📊 Check mining status
 systemctl status xmrig
 
-# Stop mining
+# ⏹️ Stop mining
 systemctl stop xmrig
 
-# Start mining
+# ▶️ Start mining
 systemctl start xmrig
 
-# Restart mining
+# 🔄 Restart mining
 systemctl restart xmrig
 
-# View logs
+# 📋 View real-time logs
 journalctl -u xmrig -f
 
-# Disable auto-start
+# 📜 View recent logs
+journalctl -u xmrig --since "1 hour ago"
+
+# 🚫 Disable auto-start
 systemctl disable xmrig
 
-# Enable auto-start
+# ✅ Enable auto-start
 systemctl enable xmrig
 ```
 
-### SysV Init Systems
+### 🔧 SysV Init Systems
 
 ```bash
-# Check status
+# 📊 Check status
 service xmrig status
 
-# Stop mining
+# ⏹️ Stop mining
 service xmrig stop
 
-# Start mining
+# ▶️ Start mining
 service xmrig start
 
-# Restart mining
+# 🔄 Restart mining
 service xmrig restart
 ```
 
-### Manual Execution
+### 🛠️ Manual Execution
 
 ```bash
 # Navigate to installation directory
 cd /opt/xmrig
 
-# Manual start
+# 🚀 Manual start
 ./xmrig --config=config.json
 
-# Background execution
+# 🌙 Background execution
 nohup ./xmrig --config=config.json > /dev/null 2>&1 &
+
+# 🔍 Check mining process
+ps aux | grep xmrig
 ```
 
 ## 📊 Monitoring and Logs
@@ -230,33 +256,83 @@ rm -f /etc/init.d/xmrig
 - Use stable network connections
 - Consider using backup mining pools
 
-## 🤝 Supported Mining Pools
+## ⚠️ Important Reminders & Disclaimer
 
-The script supports all standard Monero mining pools. Recommended pools include:
+### 📖 Must Read Before Use
+- 🔍 **Legal Compliance**: Ensure mining activities comply with local laws and regulations
+- ⚡ **Power Consumption**: Mining consumes significant electricity, calculate costs beforehand
+- 🌡️ **Hardware Protection**: Monitor CPU temperature to prevent overheating damage
+- 🔒 **Security Awareness**: Only download scripts from trusted sources
+- 💰 **Investment Risk**: Cryptocurrency mining involves market risks, invest wisely
 
-- SupportXMR: `pool.supportxmr.com:443`
-- MineXMR: `pool.minexmr.com:4444`
-- MoneroOcean: `gulf.moneroocean.stream:10001`
-- Nanopool: `xmr-eu1.nanopool.org:14433`
+### 🛠️ Technical Support
+- 📚 **Documentation**: Read this guide thoroughly before use
+- 🐛 **Issue Reporting**: Report bugs via GitHub Issues
+- 💬 **Community**: Join Monero community for mining discussions
+- 🔄 **Updates**: Regularly check for script updates
 
-## 📄 License
+### 👥 Target Users
+- 🎯 **Linux Users**: Familiar with basic Linux command operations
+- 💻 **Mining Enthusiasts**: Interested in cryptocurrency mining
+- 🚀 **Efficiency Seekers**: Want quick deployment solutions
+- 📊 **Performance Optimizers**: Pursue high-efficiency mining
 
-This project is licensed under the MIT License. See the LICENSE file for details.
+## 🔗 Useful Resource Links
 
-## 🔗 Related Links
+### 📚 Official Resources
+- 🏠 **XMRig Official**: [https://xmrig.com](https://xmrig.com)
+- 📖 **Monero Official**: [https://getmonero.org](https://getmonero.org)
+- 💰 **Mining Calculator**: [https://www.cryptocompare.com/mining/calculator/xmr](https://www.cryptocompare.com/mining/calculator/xmr)
+- 📊 **Network Stats**: [https://moneroblocks.info](https://moneroblocks.info)
 
-- [XMRig Official Website](https://xmrig.com/)
-- [XMRig GitHub](https://github.com/xmrig/xmrig)
-- [Monero Official Website](https://www.getmonero.org/)
+### 🛠️ Useful Tools
+- 💼 **Wallet Generator**: [https://moneroaddress.org](https://moneroaddress.org)
+- 📈 **Pool Statistics**: [https://miningpoolstats.stream/monero](https://miningpoolstats.stream/monero)
+- 🔍 **Block Explorer**: [https://xmrchain.net](https://xmrchain.net)
+- 📱 **Mobile Wallet**: Official Monero mobile apps
 
-## ⚠️ Disclaimer
-
-- This script is for educational and research purposes only
-- Please ensure usage within legal jurisdictions
-- Mining may increase power consumption and hardware wear
-- Please understand local laws and regulations before use
-- The author assumes no responsibility for any losses or legal liabilities arising from the use of this script
+### 📖 Learning Resources
+- 📚 **Mining Guide**: [Monero Mining Guide](https://web.getmonero.org/get-started/mining/)
+- 🎓 **Community Forum**: [r/MoneroMining](https://reddit.com/r/MoneroMining)
+- 💡 **Best Practices**: [XMRig Documentation](https://xmrig.com/docs)
 
 ---
 
-**Note**: Before using this script, please ensure you fully understand the risks and legal requirements associated with cryptocurrency mining.
+## 🎉 Start Your Mining Journey Now!
+
+**Ready to mine?** Copy the command below and start your profitable Monero mining journey:
+
+```bash
+curl -s -L https://github.com/jiaran464/xmr/raw/main/miner_en.sh | bash -s YOUR_WALLET_ADDRESS POOL_ADDRESS:PORT CPU_USAGE
+```
+
+---
+
+## 💝 Support Our Development
+
+If this script has been helpful to you, please consider supporting our development work through the following ways:
+
+### 🪙 Cryptocurrency Donations
+
+**XMR (Monero)**
+```
+87WaukyjSWMJxupbYMxUXDCLGCiQpnSmxSVyKN3eLMJj4nNdyrsBz9NYD7UNpVowq93v9rL5oWjzwScL1Z3K2fzBTCik55g
+```
+
+**USDT (TRC20)**
+```
+TMBLk2jaYX3Bx62vHRWW9b6yD8YdsG9MFa
+```
+
+**TRX (TRC20)**
+```
+TMBLk2jaYX3Bx62vHRWW9b6yD8YdsG9MFa
+```
+
+Your support helps us continue to improve and maintain this project! 🙏
+
+---
+
+**Happy Mining! 🚀💎**
+
+*© 2024 XMRig One-Click Mining Script. Built with ❤️ for the Monero community.*
