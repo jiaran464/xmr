@@ -146,105 +146,91 @@ get_download_url() {
     log_info "Download URL: $DOWNLOAD_URL"
 }
 
-# Wait for apt lock to be released
-wait_for_apt_lock() {
-    local max_wait=300  # Maximum wait time: 5 minutes
-    local wait_time=0
+# Check prerequisites
+check_prerequisites() {
+    log_info "Checking prerequisites..."
     
-    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
-        if [ $wait_time -ge $max_wait ]; then
-            log_error "Timeout waiting for apt lock to be released"
-            log_info "Attempting to force unlock..."
-            
-            # Kill any hanging apt processes
-            pkill -f apt-get || true
-            pkill -f apt || true
-            
-            # Remove lock files if they exist
-            rm -f /var/lib/apt/lists/lock 2>/dev/null || true
-            rm -f /var/cache/apt/archives/lock 2>/dev/null || true
-            rm -f /var/lib/dpkg/lock-frontend 2>/dev/null || true
-            rm -f /var/lib/dpkg/lock 2>/dev/null || true
-            
-            # Reconfigure dpkg
-            dpkg --configure -a 2>/dev/null || true
-            
-            break
-        fi
+    # Check required commands
+    local missing_commands=""
+    
+    if ! command -v curl >/dev/null 2>&1; then
+        missing_commands="$missing_commands curl"
+    fi
+    
+    if ! command -v wget >/dev/null 2>&1; then
+        missing_commands="$missing_commands wget"
+    fi
+    
+    if ! command -v tar >/dev/null 2>&1; then
+        missing_commands="$missing_commands tar"
+    fi
+    
+    if [ -n "$missing_commands" ]; then
+        log_warn "Missing required commands:$missing_commands"
+        log_info "Attempting to install missing dependencies..."
+        install_missing_dependencies
         
-        log_info "Waiting for apt lock to be released... ($wait_time/$max_wait seconds)"
-        sleep 10
-        wait_time=$((wait_time + 10))
-    done
+        # Re-check after installation
+        for cmd in $missing_commands; do
+            if ! command -v $cmd >/dev/null 2>&1; then
+                log_error "Failed to install $cmd. Please install it manually and run the script again."
+                exit 1
+            fi
+        done
+        log_info "All required dependencies are now available."
+    else
+        log_info "All required dependencies are available."
+    fi
 }
 
-# Install dependencies
-install_dependencies() {
-    log_info "Installing dependencies..."
-    
+# Install missing dependencies
+install_missing_dependencies() {
     if command -v apt-get >/dev/null 2>&1; then
-        # Debian/Ubuntu
-        wait_for_apt_lock
-        
-        # Update package list with retry mechanism
-        local retry_count=0
-        local max_retries=3
-        
-        while [ $retry_count -lt $max_retries ]; do
-            if apt-get update; then
-                break
-            else
-                retry_count=$((retry_count + 1))
-                log_warn "apt-get update failed, retrying... ($retry_count/$max_retries)"
-                if [ $retry_count -lt $max_retries ]; then
-                    sleep 30
-                    wait_for_apt_lock
-                fi
-            fi
-        done
-        
-        if [ $retry_count -eq $max_retries ]; then
-            log_error "Failed to update package list after $max_retries attempts"
-            exit 1
+        # Debian/Ubuntu - use simple approach like C3Pool
+        log_info "Updating package list..."
+        if ! apt-get update -qq; then
+            log_warn "Package update failed, but continuing..."
         fi
         
-        # Install packages with retry mechanism
-        retry_count=0
-        while [ $retry_count -lt $max_retries ]; do
-            if apt-get install -y wget curl tar; then
-                break
-            else
-                retry_count=$((retry_count + 1))
-                log_warn "Package installation failed, retrying... ($retry_count/$max_retries)"
-                if [ $retry_count -lt $max_retries ]; then
-                    sleep 30
-                    wait_for_apt_lock
-                fi
-            fi
-        done
-        
-        if [ $retry_count -eq $max_retries ]; then
-            log_error "Failed to install packages after $max_retries attempts"
+        log_info "Installing missing packages..."
+        apt-get install -y wget curl tar || {
+            log_error "Failed to install packages. Please run: sudo apt-get install wget curl tar"
             exit 1
-        fi
+        }
         
     elif command -v yum >/dev/null 2>&1; then
         # CentOS/RHEL 7
-        yum install -y wget curl tar
+        yum install -y wget curl tar || {
+            log_error "Failed to install packages. Please run: sudo yum install wget curl tar"
+            exit 1
+        }
     elif command -v dnf >/dev/null 2>&1; then
         # CentOS/RHEL 8+/Fedora
-        dnf install -y wget curl tar
+        dnf install -y wget curl tar || {
+            log_error "Failed to install packages. Please run: sudo dnf install wget curl tar"
+            exit 1
+        }
     elif command -v zypper >/dev/null 2>&1; then
         # openSUSE
-        zypper install -y wget curl tar
+        zypper install -y wget curl tar || {
+            log_error "Failed to install packages. Please run: sudo zypper install wget curl tar"
+            exit 1
+        }
     elif command -v pacman >/dev/null 2>&1; then
         # Arch Linux
-        pacman -Sy --noconfirm wget curl tar
+        pacman -Sy --noconfirm wget curl tar || {
+            log_error "Failed to install packages. Please run: sudo pacman -S wget curl tar"
+            exit 1
+        }
     elif command -v apk >/dev/null 2>&1; then
         # Alpine Linux
-        apk add --no-cache wget curl tar
+        apk add --no-cache wget curl tar || {
+            log_error "Failed to install packages. Please run: sudo apk add wget curl tar"
+            exit 1
+        }
     else
-        log_warn "Cannot identify package manager, please install wget, curl, tar manually"
+        log_error "Cannot identify package manager. Please install wget, curl, tar manually and run the script again."
+        exit 1
     fi
 }
 
@@ -573,7 +559,7 @@ main() {
     detect_system
     get_latest_version
     get_download_url
-    install_dependencies
+    check_prerequisites
     download_and_install
     create_config
     setup_autostart
