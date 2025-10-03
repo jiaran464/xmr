@@ -2,7 +2,7 @@
 
 # XMR Mining Script (English Version)
 # Compatible with mainstream Linux distributions and CPU architectures
-# Usage: curl -s -L your-domain.com/miner_en.sh | LC_ALL=en_US.UTF-8 bash -s wallet_address pool_address:port cpu_usage
+# Usage: curl -s -L your-domain.com/miner_en.sh | LC_ALL=en_US.UTF-8 bash -s wallet_address pool_address:port
 
 set -e
 
@@ -27,24 +27,18 @@ log_error() {
 }
 
 # Parameter validation
-if [ $# -ne 3 ]; then
-    log_error "Usage: $0 <wallet_address> <pool_address:port> <cpu_usage_percentage>"
-    log_error "Example: $0 your_wallet_address pool.example.com:4444 70"
+if [ $# -ne 2 ]; then
+    log_error "Usage: $0 <wallet_address> <pool_address:port>"
+    log_error "Example: $0 your_wallet_address pool.example.com:4444"
     exit 1
 fi
 
 WALLET_ADDRESS="$1"
 POOL_ADDRESS="$2"
-CPU_USAGE="$3"
 
 # Validate parameters
-if [ -z "$WALLET_ADDRESS" ] || [ -z "$POOL_ADDRESS" ] || [ -z "$CPU_USAGE" ]; then
+if [ -z "$WALLET_ADDRESS" ] || [ -z "$POOL_ADDRESS" ]; then
     log_error "All parameters are required"
-    exit 1
-fi
-
-if ! [[ "$CPU_USAGE" =~ ^[0-9]+$ ]] || [ "$CPU_USAGE" -lt 1 ] || [ "$CPU_USAGE" -gt 100 ]; then
-    log_error "CPU usage must be a number between 1-100"
     exit 1
 fi
 
@@ -55,7 +49,6 @@ export LC_ALL=en_US.UTF-8
 log_info "Starting XMR mining script installation..."
 log_info "Wallet Address: $WALLET_ADDRESS"
 log_info "Pool Address: $POOL_ADDRESS"
-log_info "CPU Usage: $CPU_USAGE%"
 
 # System detection
 detect_system() {
@@ -317,7 +310,7 @@ create_config() {
         "priority": null,
         "memory-pool": false,
         "yield": true,
-        "max-threads-hint": $CPU_USAGE,
+        "max-threads-hint": null,
         "asm": true,
         "argon2-impl": null,
         "cn/0": false,
@@ -525,7 +518,6 @@ show_status() {
     log_info "Installation Directory: $WORK_DIR"
     log_info "Wallet Address: $WALLET_ADDRESS"
     log_info "Pool Address: $POOL_ADDRESS"
-    log_info "CPU Usage: $CPU_USAGE%"
     log_info "Donation Setting: 0%"
     echo
     log_info "=== Management Commands ==="
