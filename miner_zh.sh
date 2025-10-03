@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # XMR Mining Script
-# Usage: curl -s -L x.x/miner.sh | LC_ALL=en_US.UTF-8 bash -s 钱包地址 矿池域名:端口 cpu利用率 70
+# Usage: curl -s -L x.x/miner.sh | LC_ALL=en_US.UTF-8 bash -s 钱包地址 矿池域名:端口
 
 set -e
 
@@ -34,22 +34,20 @@ log_debug() {
 }
 
 # 检查参数
-if [ $# -lt 3 ]; then
+if [ $# -lt 2 ]; then
     log_error "参数不足！"
-    echo "使用方法: curl -s -L x.x/miner.sh | LC_ALL=en_US.UTF-8 bash -s 钱包地址 矿池域名:端口 cpu利用率"
-    echo "示例: curl -s -L x.x/miner.sh | LC_ALL=en_US.UTF-8 bash -s 4xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx pool.supportxmr.com:443 70"
+    echo "使用方法: curl -s -L x.x/miner.sh | LC_ALL=en_US.UTF-8 bash -s 钱包地址 矿池域名:端口"
+    echo "示例: curl -s -L x.x/miner.sh | LC_ALL=en_US.UTF-8 bash -s 4xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx pool.supportxmr.com:443"
     exit 1
 fi
 
 # 参数解析
 WALLET_ADDRESS="$1"
 POOL_ADDRESS="$2"
-CPU_USAGE="${3:-70}"
 
 log_info "开始XMR挖矿脚本安装..."
 log_info "钱包地址: $WALLET_ADDRESS"
 log_info "矿池地址: $POOL_ADDRESS"
-log_info "CPU利用率: $CPU_USAGE%"
 
 # 检测系统架构和操作系统
 detect_system() {
@@ -312,7 +310,7 @@ create_config() {
         "priority": null,
         "memory-pool": false,
         "yield": true,
-        "max-threads-hint": $CPU_USAGE,
+        "max-threads-hint": null,
         "asm": true,
         "argon2-impl": null,
         "cn/0": false,
@@ -526,7 +524,7 @@ show_status() {
     log_info "安装目录: $WORK_DIR"
     log_info "钱包地址: $WALLET_ADDRESS"
     log_info "矿池地址: $POOL_ADDRESS"
-    log_info "CPU利用率: $CPU_USAGE%"
+
     log_info "捐赠设置: 0%"
     echo
     log_info "=== 管理命令 ==="
