@@ -11,9 +11,6 @@ param(
     [Parameter(Mandatory=$false, Position=1)]
     [string]$PoolAddress,
     
-    [Parameter(Mandatory=$false, Position=2)]
-    [int]$CpuUsage = 80,
-    
     [Parameter(Mandatory=$false)]
     [string]$WorkerName = $env:COMPUTERNAME,
     
@@ -112,12 +109,11 @@ function Show-Help {
     Write-ColorOutput "Usage Guide:" "Green"
     Write-Host ""
     Write-ColorOutput "Basic Usage:" "Yellow"
-    Write-Host "  .\miner_windows.ps1 <wallet_address> <pool_address:port> [cpu_usage]"
+    Write-Host "  .\miner_windows.ps1 <wallet_address> <pool_address:port>"
     Write-Host ""
     Write-ColorOutput "Parameters:" "Yellow"
     Write-Host "  wallet_address   - Your Monero wallet address"
     Write-Host "  pool_address:port - Mining pool server address and port"
-    Write-Host "  cpu_usage        - CPU usage percentage (default: 80%)"
     Write-Host "  -WorkerName      - Worker name (default: computer name)"
     Write-Host ""
     Write-ColorOutput "Management Commands:" "Yellow"
@@ -286,7 +282,6 @@ function New-XMRigConfig {
     param(
         [string]$WalletAddress,
         [string]$PoolAddress,
-        [int]$CpuUsage,
         [string]$WorkerName
     )
     
@@ -294,8 +289,6 @@ function New-XMRigConfig {
     
     # Get CPU information
     $cpuInfo = Get-CpuInfo
-    $maxThreads = [Math]::Floor($cpuInfo.Threads * ($CpuUsage / 100.0))
-    if ($maxThreads -lt 1) { $maxThreads = 1 }
     
     # Parse pool address
     $poolParts = $PoolAddress -split ":"
@@ -341,7 +334,7 @@ function New-XMRigConfig {
             "priority" = $null
             "memory-pool" = $false
             "yield" = $true
-            "max-threads-hint" = $maxThreads
+            "max-threads-hint" = $null
             "asm" = $true
             "argon2-impl" = $null
             "cn/0" = $false
@@ -618,17 +611,10 @@ function Main {
         return
     }
     
-    # Validate CPU usage
-    if ($CpuUsage -lt 1 -or $CpuUsage -gt 100) {
-        Write-ColorOutput "CPU usage must be between 1-100" "Red"
-        return
-    }
-    
     # Show configuration information
     Write-ColorOutput "Mining Configuration:" "Cyan"
     Write-Host "  Wallet Address: $($WalletAddress.Substring(0,8))...$($WalletAddress.Substring($WalletAddress.Length-8))"
     Write-Host "  Pool Address: $PoolAddress"
-    Write-Host "  CPU Usage: $CpuUsage%"
     Write-Host "  Worker Name: $WorkerName"
     Write-Host ""
     
@@ -659,7 +645,7 @@ function Main {
     }
     
     # Generate configuration file
-    if (!(New-XMRigConfig -WalletAddress $WalletAddress -PoolAddress $PoolAddress -CpuUsage $CpuUsage -WorkerName $WorkerName)) {
+    if (!(New-XMRigConfig -WalletAddress $WalletAddress -PoolAddress $PoolAddress -WorkerName $WorkerName)) {
         Write-ColorOutput "Configuration generation failed" "Red"
         return
     }
