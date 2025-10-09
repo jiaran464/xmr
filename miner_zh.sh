@@ -233,13 +233,21 @@ check_prerequisites() {
     
     # 检查必需的命令
     local missing_commands=""
+    local has_downloader=false
     
-    if ! command -v curl >/dev/null 2>&1; then
-        missing_commands="$missing_commands curl"
+    # 检查下载工具
+    if command -v wget >/dev/null 2>&1; then
+        has_downloader=true
+        log_info "检测到wget下载工具"
     fi
     
-    if ! command -v wget >/dev/null 2>&1; then
-        missing_commands="$missing_commands wget"
+    if command -v curl >/dev/null 2>&1; then
+        has_downloader=true
+        log_info "检测到curl下载工具"
+    fi
+    
+    if [ "$has_downloader" = false ]; then
+        missing_commands="$missing_commands wget或curl"
     fi
     
     if ! command -v tar >/dev/null 2>&1; then
@@ -251,13 +259,26 @@ check_prerequisites() {
         log_info "尝试安装缺少的依赖..."
         install_missing_dependencies
         
-        # 安装后重新检查
-        for cmd in $missing_commands; do
-            if ! command -v $cmd >/dev/null 2>&1; then
-                log_error "安装 $cmd 失败。请手动安装后重新运行脚本。"
-                exit 1
-            fi
-        done
+        # 安装后重新检查关键工具
+        if ! command -v tar >/dev/null 2>&1; then
+            log_error "安装tar失败。请手动安装后重新运行脚本。"
+            exit 1
+        fi
+        
+        # 重新检查下载工具
+        has_downloader=false
+        if command -v wget >/dev/null 2>&1; then
+            has_downloader=true
+        fi
+        if command -v curl >/dev/null 2>&1; then
+            has_downloader=true
+        fi
+        
+        if [ "$has_downloader" = false ]; then
+            log_error "安装下载工具失败。请手动安装wget或curl后重新运行脚本。"
+            exit 1
+        fi
+        
         log_info "所有必需的依赖现在都可用了。"
     else
         log_info "所有必需的依赖都可用。"
@@ -323,12 +344,51 @@ download_and_install() {
     create_hidden_dirs
     cd "$WORK_DIR"
     
-    # 下载文件
+    # 下载文件 - 优先使用wget，备用curl
     log_info "下载 $FILENAME ..."
-    wget -q --show-progress "$DOWNLOAD_URL" -O "$FILENAME" || {
-        log_error "下载失败"
+    
+    # 尝试使用wget下载
+    if command -v wget >/dev/null 2>&1; then
+        log_info "使用wget下载..."
+        if wget -q --show-progress "$DOWNLOAD_URL" -O "$FILENAME" 2>/dev/null; then
+            log_info "wget下载成功"
+        else
+            log_warn "wget下载失败，尝试使用curl..."
+            rm -f "$FILENAME"  # 清理可能的部分下载文件
+            
+            if command -v curl >/dev/null 2>&1; then
+                if curl -L -o "$FILENAME" "$DOWNLOAD_URL" --progress-bar; then
+                    log_info "curl下载成功"
+                else
+                    log_error "curl下载也失败"
+                    exit 1
+                fi
+            else
+                log_error "wget和curl都不可用，无法下载文件"
+                exit 1
+            fi
+        fi
+    elif command -v curl >/dev/null 2>&1; then
+        log_info "使用curl下载..."
+        if curl -L -o "$FILENAME" "$DOWNLOAD_URL" --progress-bar; then
+            log_info "curl下载成功"
+        else
+            log_error "curl下载失败"
+            exit 1
+        fi
+    else
+        log_error "wget和curl都不可用，无法下载文件"
+        log_error "请安装wget或curl后重新运行脚本"
         exit 1
-    }
+    fi
+    
+    # 验证下载的文件
+    if [ ! -f "$FILENAME" ] || [ ! -s "$FILENAME" ]; then
+        log_error "下载的文件不存在或为空"
+        exit 1
+    fi
+    
+    log_info "文件下载完成，大小: $(du -h "$FILENAME" | cut -f1)"
     
     # 解压文件
     log_info "解压文件..."
