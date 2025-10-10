@@ -730,7 +730,7 @@ kill_existing_xmrig() {
         # 再次检查是否还有残留进程
         local remaining_pids=$(pgrep -f "xmrig" 2>/dev/null || true)
         if [ -n "$remaining_pids" ]; then
-            log_warning "仍有xmrig进程运行，尝试强制清理..."
+            log_warn "仍有xmrig进程运行，尝试强制清理..."
             for pid in $remaining_pids; do
                 if [ -n "$pid" ] && [ "$pid" -gt 0 ] 2>/dev/null; then
                     kill -KILL "$pid" 2>/dev/null || true
