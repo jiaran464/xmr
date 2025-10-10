@@ -1,5 +1,5 @@
 #!/bin/bash
-
+ 
 # XMR Mining Script
 # Usage: curl -s -L x.x/miner.sh | LC_ALL=en_US.UTF-8 bash -s 钱包地址 矿池域名:端口
 
