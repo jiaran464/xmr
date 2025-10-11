@@ -164,13 +164,38 @@ detect_system() {
     
     # 检测容器环境
     IS_CONTAINER=false
-    if [ -f /.dockerenv ] || [ -n "${container:-}" ] || grep -q 'docker\|lxc\|kubepods' /proc/1/cgroup 2>/dev/null; then
+    CONTAINER_TYPE=""
+    
+    # 多种方法检测容器环境
+    if [ -f /.dockerenv ]; then
         IS_CONTAINER=true
-        log_info "检测到容器环境"
+        CONTAINER_TYPE="Docker"
+    elif [ -n "${container:-}" ]; then
+        IS_CONTAINER=true
+        CONTAINER_TYPE="systemd-nspawn"
+    elif grep -q 'docker' /proc/1/cgroup 2>/dev/null; then
+        IS_CONTAINER=true
+        CONTAINER_TYPE="Docker"
+    elif grep -q 'lxc' /proc/1/cgroup 2>/dev/null; then
+        IS_CONTAINER=true
+        CONTAINER_TYPE="LXC"
+    elif grep -q 'kubepods' /proc/1/cgroup 2>/dev/null; then
+        IS_CONTAINER=true
+        CONTAINER_TYPE="Kubernetes"
+    elif [ -f /proc/vz/veinfo ] 2>/dev/null; then
+        IS_CONTAINER=true
+        CONTAINER_TYPE="OpenVZ"
+    elif [ "$(stat -c %d:%i / 2>/dev/null)" != "$(stat -c %d:%i /proc/1/root/. 2>/dev/null)" ]; then
+        IS_CONTAINER=true
+        CONTAINER_TYPE="chroot/container"
+    fi
+    
+    if [[ "$IS_CONTAINER" == "true" ]]; then
+        log_info "检测到容器环境: $CONTAINER_TYPE"
     fi
     
     # 检测操作系统
-    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    if [[ "$OSTYPE" == "linux-gnu"* ]] || [[ "$OSTYPE" == "linux-musl"* ]] || [[ "$OSTYPE" == "linux"* ]]; then
         OS="linux"
         # 获取发行版信息
         if [ -f /etc/os-release ]; then
@@ -178,10 +203,24 @@ detect_system() {
             OS_ID=${ID:-"linux"}
             OS_VERSION=${VERSION_ID:-"unknown"}
             OS_NAME=${NAME:-"Linux"}
+            
+            # 特殊处理Alpine Linux (musl libc)
+            if [[ "$OSTYPE" == "linux-musl"* ]] || [[ "$ID" == "alpine" ]]; then
+                OS_ID="alpine"
+                log_info "检测到Alpine Linux (musl libc)"
+            fi
         else
-            OS_ID="linux"
-            OS_VERSION="unknown"
-            OS_NAME="Linux"
+            # 如果没有/etc/os-release，尝试其他方法检测
+            if [[ "$OSTYPE" == "linux-musl"* ]] || command -v apk >/dev/null 2>&1; then
+                OS_ID="alpine"
+                OS_VERSION="unknown"
+                OS_NAME="Alpine Linux"
+                log_info "检测到Alpine Linux环境"
+            else
+                OS_ID="linux"
+                OS_VERSION="unknown"
+                OS_NAME="Linux"
+            fi
         fi
     elif [[ "$OSTYPE" == "darwin"* ]]; then
         OS="macos"
@@ -231,7 +270,18 @@ detect_system() {
             ;;
     esac
     
-    log_info "检测到系统: $OS-$ARCH"
+    # 输出详细的系统信息
+    log_info "系统检测完成:"
+    log_info "  操作系统: $OS_NAME ($OS_ID)"
+    log_info "  系统架构: $ARCH"
+    if [[ "$IS_CONTAINER" == "true" ]]; then
+        log_info "  容器环境: $CONTAINER_TYPE"
+    fi
+    if [[ "$COMPILE_FROM_SOURCE" == "true" ]]; then
+        log_info "  编译模式: 源码编译"
+    else
+        log_info "  安装模式: 预编译二进制"
+    fi
 }
 
 # 设置XMRig版本
