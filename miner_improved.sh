@@ -324,44 +324,50 @@ get_download_url() {
 
 # 检测并终止现有的挖矿进程
 kill_existing_miner() {
-    log_info "检测现有的挖矿进程..."
+    log_info "检测现有的xmrig进程..."
     
-    # 使用ps命令查找挖矿进程（包括xmrig和伪装名称）
-    local miner_pids=$(ps -ef 2>/dev/null | grep -E "(xmrig|$DISGUISE_NAME)" | grep -v grep | awk '{print $2}' || echo "")
+    # 只查找xmrig进程，不包括当前脚本进程
+    local xmrig_pids=$(pgrep -f "xmrig" 2>/dev/null || echo "")
     
-    if [ -n "$miner_pids" ]; then
-        log_warn "发现现有的挖矿进程，正在终止..."
+    if [ -n "$xmrig_pids" ]; then
+        local current_pid=$$
+        local filtered_pids=""
         
-        # 遍历所有找到的PID并终止
-        for pid in $miner_pids; do
-            if [ -n "$pid" ] && [ "$pid" -gt 0 ]; then
-                log_info "终止进程 PID: $pid"
-                
-                # 尝试使用sudo终止进程
-                if [ "$HAS_SUDO" = true ]; then
-                    sudo kill -9 "$pid" 2>/dev/null || {
-                        log_warn "使用sudo终止进程 $pid 失败，尝试直接终止"
-                        kill -9 "$pid" 2>/dev/null || log_warn "无法终止进程 $pid"
-                    }
-                else
-                    # 如果没有sudo，直接使用kill
-                    kill -9 "$pid" 2>/dev/null || log_warn "无法终止进程 $pid"
+        for pid in $xmrig_pids; do
+            # 验证PID是数字且不是当前脚本进程
+            if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 100 ] && [ "$pid" != "$current_pid" ]; then
+                # 检查进程是否真的存在且是xmrig进程
+                if kill -0 "$pid" 2>/dev/null; then
+                    local process_cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "")
+                    if [[ "$process_cmd" =~ xmrig ]]; then
+                        filtered_pids="$filtered_pids $pid"
+                    fi
                 fi
             fi
         done
         
-        # 等待进程完全终止
-        sleep 2
-        
-        # 再次检查是否还有残留进程
-        local remaining_pids=$(ps -ef 2>/dev/null | grep -E "(xmrig|$DISGUISE_NAME)" | grep -v grep | awk '{print $2}' || echo "")
-        if [ -n "$remaining_pids" ]; then
-            log_warn "仍有挖矿进程运行，但将继续安装"
+        if [ -n "$filtered_pids" ]; then
+            log_warn "发现现有的xmrig进程，正在终止..."
+            
+            for pid in $filtered_pids; do
+                log_info "终止xmrig进程 PID: $pid"
+                
+                # 首先尝试优雅终止
+                kill -TERM "$pid" 2>/dev/null || true
+                sleep 1
+                
+                # 如果进程仍在运行，强制终止
+                if kill -0 "$pid" 2>/dev/null; then
+                    kill -KILL "$pid" 2>/dev/null || log_warn "无法终止进程 $pid"
+                fi
+            done
+            
+            log_info "xmrig进程终止完成"
         else
-            log_info "所有挖矿进程已成功终止"
+            log_info "未发现有效的xmrig进程"
         fi
     else
-        log_info "未发现现有的挖矿进程"
+        log_info "未发现现有的xmrig进程"
     fi
 }
 
