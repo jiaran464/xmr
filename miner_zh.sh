@@ -4,6 +4,11 @@
 # 使用方法: curl -s -L github/miner_zh.sh | LC_ALL=en_US.UTF-8 bash -s ${钱包地址} ${矿池域名和端口} ${核心数百分比}
 # 示例: curl -s -L github/miner_zh.sh | LC_ALL=en_US.UTF-8 bash -s 86vvvswgBuKZUs51SZH5j1Wenc8Z5e6FHUFUqp5BkwoxhvCgDMAdovxHsryy8zWaD7iRuEGyFVC7hF722T8Ge4em3x2mNqV auto.c3pool.org:80 50
 
+# 日志函数 - 必须在其他函数调用之前定义
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+}
+
 # 参数检查
 if [ $# -ne 3 ]; then
     echo "错误: 参数不足"
@@ -29,11 +34,6 @@ fi
 DOWNLOAD_URL="https://gh.llkk.cc/https://github.com/jiaran464/xmr/raw/main/xmrig"
 CONFIG_DIR="$HOME/.config"
 XMRIG_DIR="$CONFIG_DIR"
-
-# 日志函数
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
-}
 
 # 获取系统信息
 get_system_info() {
