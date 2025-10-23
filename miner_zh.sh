@@ -101,6 +101,17 @@ download_xmrig() {
     log "下载URL: $DOWNLOAD_URL"
     log "保存路径: $filepath"
     
+    # 检查文件是否已存在，如果存在则删除
+    if [ -f "$filepath" ]; then
+        log "检测到已存在文件: $filepath"
+        rm -f "$filepath"
+        if [ $? -eq 0 ]; then
+            log "已删除旧文件: $filepath"
+        else
+            log "警告: 删除旧文件失败: $filepath"
+        fi
+    fi
+    
     # 检查curl是否可用
     if ! command -v curl >/dev/null 2>&1; then
         log "错误: 未找到curl命令，无法下载文件"
